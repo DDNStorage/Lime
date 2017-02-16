@@ -32,7 +32,7 @@ def app_root():
 
 @app.route("/metric_post", methods=['POST'])
 def app_metric_post():
-    logging.error(request.json)
+    logging.error(json.dumps(request.json, indent=4))
     return "Succeeded"
 
 
