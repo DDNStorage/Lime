@@ -136,7 +136,17 @@ body {
     width: 800px;
 }
 
+.console_container {
+    height: 200px;
+    width: 900px;
+    background-color: #1b1b1b;
+    color: white;
+    padding: 5px;
+    border-radius: 5px 5px 5px 5px;
+}
+
 .console {
     white-space: pre-wrap;
     word-wrap: break-word;
+    font-size: 11px;
 }

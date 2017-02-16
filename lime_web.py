@@ -57,7 +57,7 @@ def app_console_websocket():
         cluster.lc_set_jobid_var("procname_uid")
         while True:
             time.sleep(1)
-            websocket.send("looping with config %s\n" % config)
+            websocket.send("looping with config\n")
         return "Success"
     else:
         logging.info("run command is not websocket: %s")

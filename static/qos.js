@@ -9,8 +9,10 @@
  */
 
 var QOS = {
-    NAME_CONSOLE: "result_console",
-    ID_CONSOLE: "#result_console",
+    NAME_CONSOLE_CONTAINER: "console_container",
+    ID_CONSOLE_CONTAINER: "#console_container",
+    NAME_CONSOLE: "console",
+    ID_CONSOLE: "#console",
 };
 
 function QoS(lime)
@@ -28,10 +30,13 @@ QoS.prototype.qos_page_init = function()
 
 QoS.prototype.qos_console_init = function()
 {
+    var string = '<div id="' + QOS.NAME_CONSOLE_CONTAINER +
+        '" class="console_container"></div>';
+    $(string).appendTo("#content");
     if(window.WebSocket != undefined) {
-        var string = '<pre id="' + QOS.NAME_CONSOLE +
+        string = '<pre id="' + QOS.NAME_CONSOLE +
             '" class="console"></pre>';
-        $(string).appendTo("#content");
+        $(string).appendTo(QOS.ID_CONSOLE_CONTAINER);
         var data_string = JSON.stringify(
             this.qos_lime.l_control_table.ct_config,
             null, 4);
@@ -50,6 +55,7 @@ QoS.prototype.qos_console_init = function()
         websocket.onmessage = function(evt) {
             var string = $(QOS.ID_CONSOLE).text() + evt.data;
             $(QOS.ID_CONSOLE).text(string);
+            $(QOS.ID_CONSOLE_CONTAINER).scrollTop($(QOS.ID_CONSOLE_CONTAINER)[0].scrollHeight);
         };
         websocket.onerror = function(evt) {
             console.log("onerror");
