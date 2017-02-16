@@ -1,0 +1,142 @@
+.ui-textfield {
+	/* Same like the padding of button in jquery-ui.css */
+	padding: .4em 1em;
+	/* Need to set this otherwise Safari won't show correct height for input */
+	overflow: visible;
+}
+.overflow {
+	height: 200px;
+}
+
+input:hover,
+input:focus,
+.ui-state-hover,
+.ui-selecting td *,
+.ui-button:hover,
+.ui-button:focus,
+.ui-button:hover span,
+.ui-button:focus span {
+    /* Hover items */
+    border: 1px solid #FECA40 !important;
+    background-color: #FECA40 !important;
+    color: white !important;
+}
+
+.ui-state-active,
+.ui-selected td * {
+    /* Selected items */
+    border: 1px solid #FECA40 !important;
+    background-color: #F39814 !important;
+    color: white !important;
+}
+
+h1 {
+    font-size: 18px;
+    /* Scroll is annoying for just a title */
+    overflow: hidden;
+}
+
+*, html {
+    overflow: auto;
+    margin: 0;
+}
+
+body {
+    overflow: auto;
+}
+
+#container {
+    background: #ededed;
+    margin: 0 auto;
+    /* The container should be in the middle */
+    overflow: auto;
+}
+
+#head {
+    /* Give some padding so the word won't overlap with window border */
+    padding: 5px 5px;
+    max-width: 100%;
+    width: 1240px;
+    word-break: keep-all;
+    white-space: nowrap;
+    margin: 0 auto;
+}
+
+#window {
+    min-height: 768px;
+
+    max-width: 100%;
+    width: 1240px;
+    min-width: 768px;
+    margin: 0 auto;
+
+    background-color: #fff;
+    box-shadow: -3px 0 5px -3px rgba(1, 1, 1, 0.87), 3px 0 5px -3px rgba(1, 1, 1, 0.87);
+    position: relative;
+    border: 1px solid #c5c5c5;
+    border-radius: 10px 10px 10px 10px;
+    display: flex;
+    overflow: auto;
+}
+
+#nav_container {
+    /* Use flex so the hight will be the same with #right_content_container */
+    display: flex;
+    /* Width + #right_content_container is 100% */
+    width: 25%;
+    background: #f6f6f6;
+    min-height: 768px;
+    /* Two coner has the same radius with #window */
+    border-radius: 10px 0px 0px 10px;
+    float: left;
+}
+
+#nav {
+    width: 100%;
+    min-height: 768px;
+    padding: 5px 5px;
+    /* Add a border-right to seperate with #right_content */
+    border-right: 1px solid #c5c5c5;
+}
+
+#right_content_container {
+    width: 75%;
+    float: right;
+}
+
+#right_content {
+    /* Use padding to prevent overlapping of console text */
+    padding: 5px 5px;
+}
+
+#control {
+}
+
+#content {
+}
+
+#footer_container {
+    /* Text aligned to center */
+    text-align: center;
+    max-width: 1240px;
+    /* Show footer in the middle */
+    margin: 0 auto;
+    font-size: 11px;
+    padding: 5px 5px;
+}
+
+.pie_graph {
+    width: 750px;
+    height: 500px;
+    margin-left: auto;
+    margin-right: auto;
+}
+
+.result_accordion {
+    width: 800px;
+}
+
+.console {
+    white-space: pre-wrap;
+    word-wrap: break-word;
+}

@@ -1,0 +1,8 @@
+{
+    "name": "lustre",
+    "hosts": [
+        {
+            "name": "server4"
+        }
+    ]
+}

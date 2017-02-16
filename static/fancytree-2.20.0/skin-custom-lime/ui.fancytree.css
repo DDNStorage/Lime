@@ -1,0 +1,49 @@
+/*!
+ * Fancytree Lipe skin.
+ *
+ * Please do NOT edit the css file directly. Instead, run command:
+ * "lessc ui.fancytree.less ui.fancytree.css" to update the css file.
+ */
+ul.fancytree-container {
+  padding: 3px;
+  margin-top: 0;
+  overflow: auto;
+  white-space: nowrap;
+}
+ul.fancytree-container ul {
+  padding: 0 0 0 16px;
+  margin: 0;
+}
+ul.fancytree-container li {
+  list-style-type: none;
+}
+span.fancytree-empty,
+span.fancytree-vline,
+span.fancytree-expander,
+span.fancytree-icon,
+span.fancytree-checkbox,
+span.fancytree-radio,
+span.fancytree-drag-helper-img,
+#fancytree-drop-marker {
+  width: 16px;
+  display: inline-block;
+}
+span.fancytree-node {
+  width: 100%;
+  display: inline-block;
+  border-top-left-radius: 3px;
+  border-top-right-radius: 3px;
+  border-bottom-left-radius: 3px;
+  border-bottom-right-radius: 3px;
+}
+span.fancytree-active {
+  background: #F39814;
+  font-weight: normal;
+  color: white;
+}
+span.fancytree-node:hover,
+span.fancytree-node:focus {
+  background: #FECA40;
+  font-weight: normal;
+  color: white;
+}

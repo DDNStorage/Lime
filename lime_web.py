@@ -21,6 +21,7 @@ from geventwebsocket.handler import WebSocketHandler
 
 import utils
 import watched_io
+import lustre_config
 
 from flask import Flask, render_template, request, jsonify
 app = Flask(__name__)
@@ -34,6 +35,31 @@ def app_root():
 def app_metric_post():
     logging.error(json.dumps(request.json, indent=4))
     return "Succeeded"
+
+
+@app.route("/console_websocket")
+def app_console_websocket():
+    if request.environ.get('wsgi.websocket'):
+        websocket = request.environ['wsgi.websocket']
+        config_string = websocket.receive()
+        config = json.loads(config_string)
+        logging.error("received config: %s", config)
+        fsname = config["name"]
+        hosts = []
+        for host in config["hosts"]:
+            hosts.append(host["name"])
+        logging.error("fsname: [%s], hosts: %s", fsname, hosts)
+        cluster = lustre_config.LustreCluster(fsname, hosts)
+        cluster.lc_detect_devices()
+        cluster.lc_enable_tbf_for_ost_io("nid")
+        cluster.lc_set_jobid_var("procname_uid")
+        while True:
+            time.sleep(1)
+            websocket.send("looping with config %s\n" % config)
+        return "Success"
+    else:
+        logging.info("run command is not websocket: %s")
+        return "Failure"
 
 
 if __name__ == "__main__":
