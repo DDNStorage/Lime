@@ -83,24 +83,27 @@ def scp_remote_escape(filename):
     return sh_escape("".join(new_name))
 
 
-def ssh_command(hostname, command, login_name="root"):
+def ssh_command(hostname, command, login_name="root", identity_file=None):
     """
     Return the ssh command on a remote host
     """
-    full_command = ("ssh %s -l %s -o StrictHostKeyChecking=no \"%s\"" %
-                    (hostname, login_name, sh_escape(command)))
+    extra_option = ""
+    if identity_file is not None:
+        extra_option = ("-i %s" % identity_file)
+    full_command = ("ssh %s -l %s -o StrictHostKeyChecking=no %s \"%s\"" %
+                    (hostname, login_name, extra_option, sh_escape(command)))
     return full_command
 
 
 def ssh_run(hostname, command, login_name="root", timeout=None,
             stdout_tee=None, stderr_tee=None, stdin=None,
             return_stdout=True, return_stderr=True,
-            quit_func=None):
+            quit_func=None, identity_file=None):
     """
     Use ssh to run command on a remote host
     """
     # pylint: disable=too-many-arguments
-    full_command = ssh_command(hostname, command, login_name)
+    full_command = ssh_command(hostname, command, login_name, identity_file)
     return utils.run(full_command, timeout=timeout, stdout_tee=stdout_tee,
                      stderr_tee=stderr_tee, stdin=stdin,
                      return_stdout=return_stdout, return_stderr=return_stderr,
@@ -112,10 +115,11 @@ class SSHHost(object):
     Each SSH host has an object of SSHHost
     """
     # pylint: disable=too-many-public-methods
-    def __init__(self, hostname):
+    def __init__(self, hostname, identity_file=None):
         self.sh_hostname = hostname
         self.sh_never_up = True
         self.sh_distro_cache = None
+        self.sh_identity_file = identity_file
 
     def sh_is_up(self, timeout=60):
         """
@@ -706,7 +710,8 @@ class SSHHost(object):
         ret = ssh_run(self.sh_hostname, command, timeout=timeout,
                       stdout_tee=stdout_tee, stderr_tee=stderr_tee,
                       stdin=stdin, return_stdout=return_stdout,
-                      return_stderr=return_stderr, quit_func=quit_func)
+                      return_stderr=return_stderr, quit_func=quit_func,
+                      identity_file=self.sh_identity_file)
         if not silent:
             logging.debug("ran [%s] on host [%s], ret = [%d], stdout = [%s], "
                           "stderr = [%s]",

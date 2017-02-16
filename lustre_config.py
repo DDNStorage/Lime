@@ -31,8 +31,8 @@ class LustreHost(ssh_host.SSHHost):
     """
     Eacho host in a Lustre clustre has an object of LustreHost
     """
-    def __init__(self, cluster, hostname):
-        super(LustreHost, self).__init__(hostname)
+    def __init__(self, cluster, hostname, identity_file=None):
+        super(LustreHost, self).__init__(hostname, identity_file=identity_file)
         self.lh_devices = []
         self.lh_cluster = cluster
 
@@ -134,7 +134,7 @@ class LustreCluster(object):
     """
     Each Lustre cluster has an object of LustreCluster
     """
-    def __init__(self, fsname, server_hostnames):
+    def __init__(self, fsname, server_hostnames, ssh_identity_file=None):
         self.lc_hosts = []
         self.lc_fsname = fsname
         mdt_pattern = (r"^.+ UP mdt %s-MDT(?P<mdt_index>\S+) .+$" %
@@ -149,7 +149,7 @@ class LustreCluster(object):
         logging.debug("mgs_pattern: [%s]", mgs_pattern)
         self.lc_mgs_pattern = re.compile(mgs_pattern)
         for hostname in server_hostnames:
-            host = LustreHost(self, hostname)
+            host = LustreHost(self, hostname, identity_file=ssh_identity_file)
             self.lc_hosts.append(host)
         self.lc_devices = []
 

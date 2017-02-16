@@ -48,8 +48,10 @@ def app_console_websocket():
         hosts = []
         for host in config["hosts"]:
             hosts.append(host["name"])
+        ssh_identity_file = config["ssh_identity_file"]
         logging.error("fsname: [%s], hosts: %s", fsname, hosts)
-        cluster = lustre_config.LustreCluster(fsname, hosts)
+        cluster = lustre_config.LustreCluster(fsname, hosts,
+            ssh_identity_file=ssh_identity_file)
         cluster.lc_detect_devices()
         cluster.lc_enable_tbf_for_ost_io("nid")
         cluster.lc_set_jobid_var("procname_uid")

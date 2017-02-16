@@ -4,5 +4,6 @@
         {
             "name": "server4"
         }
-    ]
+    ],
+    "ssh_identity_file": "/root/.ssh/id_dsa"
 }
