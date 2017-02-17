@@ -74,11 +74,11 @@ class WatchedJobs(object):
             return 1
         dead_websockets = []
         rate = job.wj_datapoint_add(timestamp, value)
-        console = ("new datapoint, timestamp: %d, value: %d, rate: %d MB/s\n" %
-            (timestamp, value, rate))
-        json_string = json.dumps({"console": console, "rate": rate})
+        console = ("new datapoint for %s, timestamp: %f, value: %d, rate: %d MB/s\n" %
+            (job_id, timestamp, value, rate))
+        json_string = json.dumps({"console": console, "rate": int(rate), "job_id": job_id})
         for websocket in job.wj_websockets:
-            logging.debug("sending: %s", json_string)
+            logging.error("sending: %s", json_string)
             try:
                 websocket.send(json_string)
             except WebSocketError:
@@ -151,12 +151,12 @@ def app_metric_post():
         logging.debug("tag_dict: %s", tag_dict)
         if tag_dict["optype"] != "sum_write_bytes":
             continue
-        logging.debug(json.dumps(metric, indent=4))
+        logging.error(json.dumps(metric, indent=4))
         job_id = tag_dict["job_id"]
         value = metric["values"][0]
-        timestamp = int(metric["time"])
+        timestamp = metric["time"]
         watched_jobs.wjs_metric_received(job_id, timestamp, value)
-        logging.error("time: %d, value: %d", timestamp, value)
+        logging.debug("job_id: %s, time: %d, value: %d", job_id, timestamp, value)
     return "Succeeded"
 
 
@@ -167,11 +167,12 @@ def app_console_websocket():
         config_string = websocket.receive()
         config = json.loads(config_string)
         logging.debug("received config: %s", config)
-        fsname = config["name"]
+        cluster = config["cluster"]
+        fsname = cluster["name"]
         hosts = []
-        for host in config["hosts"]:
+        for host in cluster["hosts"]:
             hosts.append(host["name"])
-        ssh_identity_file = config["ssh_identity_file"]
+        ssh_identity_file = cluster["ssh_identity_file"]
         logging.debug("fsname: [%s], hosts: %s", fsname, hosts)
         cluster = lustre_config.LustreCluster(fsname, hosts,
             ssh_identity_file=ssh_identity_file)
@@ -179,12 +180,17 @@ def app_console_websocket():
         cluster.lc_enable_tbf_for_ost_io("nid")
         cluster.lc_set_jobid_var("procname_uid")
         # TODO: jobid from client
-        job_id = "dd.0"
-        watched_jobs.wjs_watch_job(job_id, websocket)
+        jobs = config["jobs"]
+        for job in jobs:
+            job_id = job["id"]
+            watched_jobs.wjs_watch_job(job_id, websocket)
+            
         while not websocket.closed:
             logging.debug("websocket is alive");
             time.sleep(1)
-        watched_jobs.wjs_unwatch_job(job_id, websocket)
+
+        for job in jobs:
+            watched_jobs.wjs_unwatch_job(job_id, websocket)
         logging.error("websocket is closed");
         return "Success"
     else:

@@ -1,9 +1,19 @@
 {
-    "name": "lustre",
-    "hosts": [
+    "cluster": {
+        "name": "lustre",
+        "hosts": [
+            {
+                "name": "server4"
+            }
+        ],
+        "ssh_identity_file": "/root/.ssh/id_dsa"
+    },
+    "jobs": [
         {
-            "name": "server4"
+            "id": "dd.0"
+        },
+        {
+            "id": "dd.1001"
         }
-    ],
-    "ssh_identity_file": "/root/.ssh/id_dsa"
+    ]
 }
