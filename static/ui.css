@@ -150,3 +150,8 @@ body {
     word-wrap: break-word;
     font-size: 11px;
 }
+
+.panel {
+    width: 200px;
+    height: 200px;
+}
