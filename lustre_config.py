@@ -27,6 +27,16 @@ def find_device_in_list(devices, type, index):
     return None
 
 
+def tbf_escape_name(name):
+    good_name = ""
+    for char in name:
+        if char.isalnum() or char == "_":
+            good_name += char
+        else:
+            good_name += "_"
+    return good_name
+
+
 class LustreHost(ssh_host.SSHHost):
     """
     Eacho host in a Lustre clustre has an object of LustreHost
@@ -116,6 +126,19 @@ class LustreHost(ssh_host.SSHHost):
             return -1
         return 0
 
+    def lh_enable_fifo_for_ost_io(self):
+        command = ("echo -n fifo > /proc/fs/lustre/ost/OSS/ost_io/nrs_policies")
+        retval = self.sh_run(command)
+        if retval.cr_exit_status != 0:
+            logging.error("failed to run command [%s] on host [%s], "
+                          "ret = [%d], stdout = [%s], stderr = [%s]",
+                          command, self.sh_hostname,
+                          retval.cr_exit_status,
+                          retval.cr_stdout,
+                          retval.cr_stderr)
+            return -1
+        return 0
+
     def lh_set_jobid_var(self, jobid_var):
         command = ("lctl conf_param %s.sys.jobid_var=%s" %
                    (self.lh_cluster.lc_fsname, jobid_var))
@@ -129,6 +152,36 @@ class LustreHost(ssh_host.SSHHost):
                           retval.cr_stderr)
             return -1
         return 0
+
+    def lh_start_tbf_rule(self, name, expression, rate):
+        # For Lustre version ealier than 2.8.54, no "rate=" or "jobid=" is needed
+        command = ("echo -n start %s jobid={%s} rate=%d > /proc/fs/lustre/ost/OSS/ost_io/nrs_tbf_rule" %
+            (name, expression, rate))
+        retval = self.sh_run(command)
+        if retval.cr_exit_status != 0:
+            logging.error("failed to run command [%s] on host [%s], "
+                          "ret = [%d], stdout = [%s], stderr = [%s]",
+                          command, self.sh_hostname,
+                          retval.cr_exit_status,
+                          retval.cr_stdout,
+                          retval.cr_stderr)
+            return -1
+        return 0
+
+    def lh_change_tbf_rate(self, name, rate):
+        command = ("echo -n change %s rate=%d > /proc/fs/lustre/ost/OSS/ost_io/nrs_tbf_rule" %
+            (name, rate))
+        retval = self.sh_run(command)
+        if retval.cr_exit_status != 0:
+            logging.error("failed to run command [%s] on host [%s], "
+                          "ret = [%d], stdout = [%s], stderr = [%s]",
+                          command, self.sh_hostname,
+                          retval.cr_exit_status,
+                          retval.cr_stdout,
+                          retval.cr_stderr)
+            return -1
+        return 0
+
 
 class LustreCluster(object):
     """
@@ -195,6 +248,52 @@ class LustreCluster(object):
                           self.lc_fsname)
             return -1
         return 0
+
+    def lc_enable_fifo_for_ost_io(self):
+        hosts = []
+        for device in self.lc_devices:
+            if device.ld_type != "OST":
+                continue
+            if device.ld_host.sh_hostname in hosts:
+                continue
+            ret = device.ld_host.lh_enable_fifo_for_ost_io()
+            if ret:
+                logging.error("failed to disable TBF on host [%s]",
+                              device.ld_host.sh_hostname)
+                return ret
+            hosts.append(device.ld_host.sh_hostname)
+        return 0
+
+    def lc_start_tbf_rule(self, name, expression, rate):
+        hosts = []
+        for device in self.lc_devices:
+            if device.ld_type != "OST":
+                continue
+            if device.ld_host.sh_hostname in hosts:
+                continue
+            ret = device.ld_host.lh_start_tbf_rule(name, expression, rate)
+            if ret:
+                logging.error("failed to start TBF rule [%s] on host [%s]",
+                              name, device.ld_host.sh_hostname)
+                return ret
+            hosts.append(device.ld_host.sh_hostname)
+        return 0
+
+    def lc_change_tbf_rate(self, name, rate):
+        hosts = []
+        for device in self.lc_devices:
+            if device.ld_type != "OST":
+                continue
+            if device.ld_host.sh_hostname in hosts:
+                continue
+            ret = device.ld_host.lh_change_tbf_rate(name, rate)
+            if ret:
+                logging.error("failed to start TBF rule [%s] on host [%s]",
+                              name, device.ld_host.sh_hostname)
+                return ret
+            hosts.append(device.ld_host.sh_hostname)
+        return 0
+
 
 if __name__ == "__main__":
     cluster = LustreCluster("lustre", ["10.0.0.24"])

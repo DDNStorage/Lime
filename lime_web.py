@@ -78,7 +78,7 @@ class WatchedJobs(object):
             (job_id, timestamp, value, rate))
         json_string = json.dumps({"console": console, "rate": int(rate), "job_id": job_id})
         for websocket in job.wj_websockets:
-            logging.error("sending: %s", json_string)
+            logging.debug("sending: %s", json_string)
             try:
                 websocket.send(json_string)
             except WebSocketError:
@@ -151,7 +151,9 @@ def app_metric_post():
         logging.debug("tag_dict: %s", tag_dict)
         if tag_dict["optype"] != "sum_write_bytes":
             continue
-        logging.error(json.dumps(metric, indent=4))
+        if tag_dict["ost_index"] != "OST0000":
+            continue
+        logging.debug(json.dumps(metric, indent=4))
         job_id = tag_dict["job_id"]
         value = metric["values"][0]
         timestamp = metric["time"]
@@ -177,17 +179,25 @@ def app_console_websocket():
         cluster = lustre_config.LustreCluster(fsname, hosts,
             ssh_identity_file=ssh_identity_file)
         cluster.lc_detect_devices()
-        cluster.lc_enable_tbf_for_ost_io("nid")
+        cluster.lc_enable_fifo_for_ost_io()
+        cluster.lc_enable_tbf_for_ost_io("jobid")
         cluster.lc_set_jobid_var("procname_uid")
-        # TODO: jobid from client
+
         jobs = config["jobs"]
         for job in jobs:
-            job_id = job["id"]
+            job_id = job["job_id"]
+            tbf_name = lustre_config.tbf_escape_name(job_id)
             watched_jobs.wjs_watch_job(job_id, websocket)
+            cluster.lc_start_tbf_rule(tbf_name, job_id, 1000)
             
         while not websocket.closed:
-            logging.debug("websocket is alive");
-            time.sleep(1)
+            control_command = websocket.receive()
+            logging.error("command: %s", control_command);
+            control = json.loads(control_command)
+            job_id = control["job_id"]
+            tbf_name = lustre_config.tbf_escape_name(job_id)
+            rate = control["rate"]
+            cluster.lc_change_tbf_rate(tbf_name, int(rate))
 
         for job in jobs:
             watched_jobs.wjs_unwatch_job(job_id, websocket)

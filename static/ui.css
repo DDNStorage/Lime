@@ -9,8 +9,8 @@
 }
 
 input:hover,
-input:focus,
 .ui-state-hover,
+.ui-state-active,
 .ui-selecting td *,
 .ui-button:hover,
 .ui-button:focus,
@@ -22,10 +22,10 @@ input:focus,
     color: white !important;
 }
 
-.ui-state-active,
+input:focus,
 .ui-selected td * {
     /* Selected items */
-    border: 1px solid #FECA40 !important;
+    border: 1px solid #F39814 !important;
     background-color: #F39814 !important;
     color: white !important;
 }
@@ -113,6 +113,14 @@ body {
 }
 
 #content {
+}
+
+.ui-menu .ui-state-active {
+    /*
+     * Othewise, the "margin: -1px" in jquery-ui.css:139 would cause scroll to
+     * showup
+     */
+    margin: 0px !important;
 }
 
 #footer_container {
