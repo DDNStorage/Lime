@@ -186,20 +186,24 @@ QoS.prototype.qos_console_init = function()
     };
     websocket.onmessage = function(evt) {
         var message = JSON.parse(evt.data);
-        var console_message = message.console
+        var type = message.type;
+        var console_message = JSON.stringify(message) + "\n";
         var string = $(QOS.ID_CONSOLE).text() + console_message;
-        var rate = message.rate
-        var job_id = message.job_id
         $(QOS.ID_CONSOLE).text(string);
         $(QOS.ID_CONSOLE_CONTAINER).scrollTop($(QOS.ID_CONSOLE_CONTAINER)[0].scrollHeight);
-        if (! job_id in that.qos_job_id_dict) {
-            console.error("unexpected datapoint for job", job_id);
-            return
+        if (type == "datapoint") {
+            var rate = message.rate;
+            var job_id = message.job_id;
+            if (! job_id in that.qos_job_id_dict) {
+                console.error("unexpected datapoint for job", job_id);
+                return;
+            }
+            job = that.qos_job_id_dict[job_id];
+            option = job.j_write_option;
+            option.series[0].data[0].value = Math.round(rate);
+            job.j_write_chart.setOption(option, true);
+        } else if (type == "command_result") {
         }
-        job = that.qos_job_id_dict[job_id]
-        option = job.j_write_option;
-        option.series[0].data[0].value = rate;
-        job.j_write_chart.setOption(option, true);
     };
     websocket.onerror = function(evt) {
         console.log("onerror");

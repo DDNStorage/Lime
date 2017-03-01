@@ -87,7 +87,8 @@ class WatchedJob(object):
         self.wj_value = None
         self.wj_timestamp = None
         self.wj_services = {}
-        self.wj_timer_started = False
+        timer = threading.Timer(WAIT_INTERVAL, self.wj_datapoint_send)
+        timer.start()
 
     # Return the rate, if no rate return 0
     def wj_datapoint_add(self, service_id, timestamp, value):
@@ -96,22 +97,15 @@ class WatchedJob(object):
             self.wj_services[service_id] = service
         else:
             service = self.wj_services[service_id]
-        if not self.wj_timer_started:
-            self.wj_timer_started = True
-            timer = threading.Timer(WAIT_INTERVAL, self.wj_datapoint_send)
-            timer.start()
         service.jps_datapoint_add(timestamp, value)
 
     def wj_datapoint_send(self):
-        timer = threading.Timer(METRIC_INTERVAL, self.wj_datapoint_send)
-        timer.start()
-
         dead_websockets = []
         rate = self.wj_get_rate();
-        console = ("new datapoint of job %s, rate: %d MB/s\n" %
-            (self.wj_job_id, rate))
         json_string = json.dumps({
-            "console": console, "rate": int(rate), "job_id": self.wj_job_id})
+            "type": "datapoint",
+            "rate": rate,
+            "job_id": self.wj_job_id})
         for websocket in self.wj_websockets:
             logging.debug("sending: %s", json_string)
             try:
@@ -124,6 +118,9 @@ class WatchedJob(object):
             self.wj_websockets.remove(websocket)
         if len(self.wj_websockets) == 0:
             del self.wj_jobs.wjs_jobs[self.wj_job_id]
+        else:
+            timer = threading.Timer(METRIC_INTERVAL, self.wj_datapoint_send)
+            timer.start()
 
     def wj_get_rate(self):
         rate = 0
@@ -232,7 +229,19 @@ def app_console_websocket():
             job_id = control["job_id"]
             tbf_name = lustre_config.tbf_escape_name(job_id)
             rate = control["rate"]
-            cluster.lc_change_tbf_rate(tbf_name, int(rate))
+            ret = cluster.lc_change_tbf_rate(tbf_name, int(rate))
+            if ret:
+                result = "failure"
+            else:
+                result = "success"
+            json_string = json.dumps({
+                "type": "command_result",
+                "command": "change_rate",
+                "rate": rate,
+                "job_id": job_id,
+                "result": result})
+            logging.debug("sent result")
+            websocket.send(json_string)
 
         for job in jobs:
             watched_jobs.wjs_unwatch_job(job_id, websocket)
