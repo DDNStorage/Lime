@@ -66,31 +66,18 @@ class WatchedJobs(object):
         self.wjs_condition.release()
         return 0
 
-    def wjs_metric_received(self, job_id, timestamp, value):
+    def wjs_metric_received(self, service_id, job_id, timestamp, value):
         self.wjs_condition.acquire()
         job = self._wjs_find_job(job_id)
         if job is None:
             self.wjs_condition.release()
             return 1
-        dead_websockets = []
-        rate = job.wj_datapoint_add(timestamp, value)
-        console = ("new datapoint for %s, timestamp: %f, value: %d, rate: %d MB/s\n" %
-            (job_id, timestamp, value, rate))
-        json_string = json.dumps({"console": console, "rate": int(rate), "job_id": job_id})
-        for websocket in job.wj_websockets:
-            logging.debug("sending: %s", json_string)
-            try:
-                websocket.send(json_string)
-            except WebSocketError:
-                websocket.closed = True
-                dead_websockets.append(websocket)
-
-        for websocket in dead_websockets:
-            job.wj_websockets.remove(websocket)
-        if len(job.wj_websockets) == 0:
-            del self.wjs_jobs[job_id]
+        job.wj_datapoint_add(service_id, timestamp, value)
         self.wjs_condition.release()
         return 0
+
+WAIT_INTERVAL = 1.0
+METRIC_INTERVAL = WAIT_INTERVAL * 2
 
 class WatchedJob(object):
     def __init__(self, job_id, jobs):
@@ -99,23 +86,71 @@ class WatchedJob(object):
         self.wj_jobs = jobs
         self.wj_value = None
         self.wj_timestamp = None
+        self.wj_services = {}
+        self.wj_timer_started = False
 
     # Return the rate, if no rate return 0
-    def wj_datapoint_add(self, timestamp, value):
-        if self.wj_timestamp is None:
-            self.wj_timestamp = timestamp
-            self.wj_value = value
-            return 0
+    def wj_datapoint_add(self, service_id, timestamp, value):
+        if service_id not in self.wj_services:
+            service = JobPerService()
+            self.wj_services[service_id] = service
         else:
-            diff = value - self.wj_value
-            time_diff = timestamp - self.wj_timestamp
-            # If diff is negative, return zero
-            rate = 0
-            if diff > 0 and time_diff > 0:
-                rate = diff / time_diff / 1000000
-            self.wj_timestamp = timestamp
-            self.wj_value = value
-            return rate
+            service = self.wj_services[service_id]
+        if not self.wj_timer_started:
+            self.wj_timer_started = True
+            timer = threading.Timer(WAIT_INTERVAL, self.wj_datapoint_send)
+            timer.start()
+        service.jps_datapoint_add(timestamp, value)
+
+    def wj_datapoint_send(self):
+        timer = threading.Timer(METRIC_INTERVAL, self.wj_datapoint_send)
+        timer.start()
+
+        dead_websockets = []
+        rate = self.wj_get_rate();
+        console = ("new datapoint of job %s, rate: %d MB/s\n" %
+            (self.wj_job_id, rate))
+        json_string = json.dumps({
+            "console": console, "rate": int(rate), "job_id": self.wj_job_id})
+        for websocket in self.wj_websockets:
+            logging.debug("sending: %s", json_string)
+            try:
+                websocket.send(json_string)
+            except WebSocketError:
+                websocket.closed = True
+                dead_websockets.append(websocket)
+
+        for websocket in dead_websockets:
+            self.wj_websockets.remove(websocket)
+        if len(self.wj_websockets) == 0:
+            del self.wj_jobs.wjs_jobs[self.wj_job_id]
+
+    def wj_get_rate(self):
+        rate = 0
+        for service_id in self.wj_services:
+            service = self.wj_services[service_id]
+            service_rate = service.jps_rate
+            if service_rate is not None:
+                rate += service_rate
+        return rate
+
+class JobPerService(object):
+    def __init__(self):
+        self.jps_value = None;
+        self.jps_timestamp = None;
+	self.jps_rate = None
+
+    def jps_datapoint_add(self, timestamp, value):
+        # If overflow happens, rate will be kept unchanged for one interval
+        if (self.jps_timestamp is not None and
+            value >= self.jps_value and
+            timestamp > self.jps_timestamp):
+            diff = value - self.jps_value
+            time_diff = timestamp - self.jps_timestamp
+            self.jps_rate = diff / time_diff / 1000000
+        self.jps_timestamp = timestamp
+        self.jps_value = value
+
 
 watched_jobs = WatchedJobs()
 
@@ -151,14 +186,14 @@ def app_metric_post():
         logging.debug("tag_dict: %s", tag_dict)
         if tag_dict["optype"] != "sum_write_bytes":
             continue
-        if tag_dict["ost_index"] != "OST0000":
-            continue
+        service_id = tag_dict["ost_index"]
         logging.debug(json.dumps(metric, indent=4))
         job_id = tag_dict["job_id"]
         value = metric["values"][0]
         timestamp = metric["time"]
-        watched_jobs.wjs_metric_received(job_id, timestamp, value)
-        logging.debug("job_id: %s, time: %d, value: %d", job_id, timestamp, value)
+        watched_jobs.wjs_metric_received(service_id, job_id, timestamp, value)
+        logging.debug("service_id :%s, job_id: %s, time: %d, value: %d",
+            service_id, job_id, timestamp, value)
     return "Succeeded"
 
 
@@ -192,7 +227,7 @@ def app_console_websocket():
             
         while not websocket.closed:
             control_command = websocket.receive()
-            logging.error("command: %s", control_command);
+            logging.debug("command: %s", control_command);
             control = json.loads(control_command)
             job_id = control["job_id"]
             tbf_name = lustre_config.tbf_escape_name(job_id)
@@ -201,7 +236,7 @@ def app_console_websocket():
 
         for job in jobs:
             watched_jobs.wjs_unwatch_job(job_id, websocket)
-        logging.error("websocket is closed");
+        logging.debug("websocket is closed");
         return "Success"
     else:
         logging.info("run command is not websocket: %s")
