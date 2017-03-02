@@ -27,6 +27,11 @@ def find_device_in_list(devices, type, index):
     return None
 
 
+def version_value(major, minor, patch):
+    value = (major << 16) | (minor << 8) | patch
+    return value
+
+
 def tbf_escape_name(name):
     good_name = ""
     for char in name:
@@ -45,6 +50,7 @@ class LustreHost(ssh_host.SSHHost):
         super(LustreHost, self).__init__(hostname, identity_file=identity_file)
         self.lh_devices = []
         self.lh_cluster = cluster
+        self.lh_detect_version()
 
     def lh_detect_devices(self, cluster_devices):
         logging.debug("detecting devices on host [%s]", self.sh_hostname)
@@ -155,8 +161,12 @@ class LustreHost(ssh_host.SSHHost):
 
     def lh_start_tbf_rule(self, name, expression, rate):
         # For Lustre version ealier than 2.8.54, no "rate=" or "jobid=" is needed
-        command = ("echo -n start %s jobid={%s} rate=%d > /proc/fs/lustre/ost/OSS/ost_io/nrs_tbf_rule" %
-            (name, expression, rate))
+        if self.lh_version_value >= version_value(2, 8, 54):
+            command = ("echo -n start %s jobid={%s} rate=%d > /proc/fs/lustre/ost/OSS/ost_io/nrs_tbf_rule" %
+                (name, expression, rate))
+        else:
+            command = ("echo -n start %s {%s} %d > /proc/fs/lustre/ost/OSS/ost_io/nrs_tbf_rule" %
+                (name, expression, rate))
         retval = self.sh_run(command)
         if retval.cr_exit_status != 0:
             logging.error("failed to run command [%s] on host [%s], "
@@ -169,8 +179,12 @@ class LustreHost(ssh_host.SSHHost):
         return 0
 
     def lh_change_tbf_rate(self, name, rate):
-        command = ("echo -n change %s rate=%d > /proc/fs/lustre/ost/OSS/ost_io/nrs_tbf_rule" %
-            (name, rate))
+        if self.lh_version_value >= version_value(2, 8, 54):
+            command = ("echo -n change %s rate=%d > /proc/fs/lustre/ost/OSS/ost_io/nrs_tbf_rule" %
+                (name, rate))
+        else:
+            command = ("echo -n change %s %d > /proc/fs/lustre/ost/OSS/ost_io/nrs_tbf_rule" %
+                (name, rate))
         retval = self.sh_run(command)
         if retval.cr_exit_status != 0:
             logging.error("failed to run command [%s] on host [%s], "
@@ -180,6 +194,38 @@ class LustreHost(ssh_host.SSHHost):
                           retval.cr_stdout,
                           retval.cr_stderr)
             return -1
+        return 0
+
+    def lh_detect_version(self):
+        command = ("cat /proc/fs/lustre/version | grep lustre: | awk '{print $2}'")
+        retval = self.sh_run(command)
+        if retval.cr_exit_status != 0:
+            logging.error("failed to run command [%s] on host [%s], "
+                          "ret = [%d], stdout = [%s], stderr = [%s]",
+                          command, self.sh_hostname,
+                          retval.cr_exit_status,
+                          retval.cr_stdout,
+                          retval.cr_stderr)
+            self.lh_lustre_version = None
+            return -1
+        self.lh_lustre_version_string = retval.cr_stdout.strip()
+        version_pattern = r"^(?P<major>\d+)\.(?P<minor>\d+)\.(?P<patch>\d+)\.(?P<fix>\d+)$"
+        version_regular = re.compile(version_pattern)
+        match = version_regular.match(self.lh_lustre_version_string)
+        if match:
+            self.lh_lustre_version_major = int(match.group("major"))
+            self.lh_lustre_version_minor = int(match.group("minor"))
+            self.lh_lustre_version_patch = int(match.group("patch"))
+            self.lh_lustre_version_fix = int(match.group("fix"))
+        else:
+            logging.error("unexpected version string format: %s",
+                          self.lh_lustre_version_string)
+            return -1
+
+        self.lh_version_value = version_value(self.lh_lustre_version_major,
+            self.lh_lustre_version_minor, self.lh_lustre_version_patch)
+        logging.debug("version_string: %s %d", self.lh_lustre_version_string,
+            self.lh_version_value)
         return 0
 
 
