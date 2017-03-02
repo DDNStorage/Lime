@@ -6,54 +6,63 @@ Web inteface of LIME
 """
 import json
 import os
-import time
-import signal
-import subprocess
 import threading
-import StringIO
-import select
 import logging
 import logging.handlers
-import sys
 from gevent.wsgi import WSGIServer
 from gevent import monkey
 from geventwebsocket.handler import WebSocketHandler
 from geventwebsocket.exceptions import WebSocketError
 
 import utils
-import watched_io
 import lustre_config
 
-from flask import Flask, render_template, request, jsonify
-app = Flask(__name__)
+from flask import Flask, render_template, request
+APP = Flask(__name__)
+
 
 class WatchedJobs(object):
+    """
+    All the watched Jobs will be group here
+    """
     def __init__(self):
         self.wjs_jobs = {}
         self.wjs_condition = threading.Condition()
 
     def _wjs_find_job(self, job_id):
+        """
+        Find job according to its job ID
+        """
         if job_id in self.wjs_jobs:
             return self.wjs_jobs[job_id]
         else:
             return None
 
     def wjs_find_job(self, job_id):
+        """
+        Find job according to its job ID
+        """
         self.wjs_condition.acquire()
         job = self._wjs_find_job(job_id)
         self.wjs_condition.release()
         return job
 
     def wjs_watch_job(self, job_id, websocket):
+        """
+        A websocket connected, so watch the job
+        """
         self.wjs_condition.acquire()
         job = self._wjs_find_job(job_id)
         if job is None:
-            job = WatchedJob(job_id, watched_jobs)
+            job = WatchedJob(job_id, WATCHED_JOBS)
             self.wjs_jobs[job_id] = job
         job.wj_websockets.append(websocket)
         self.wjs_condition.release()
 
     def wjs_unwatch_job(self, job_id, websocket):
+        """
+        A websocket disconnected, so unwatch the job
+        """
         self.wjs_condition.acquire()
         job = self._wjs_find_job(job_id)
         if job is None:
@@ -67,6 +76,9 @@ class WatchedJobs(object):
         return 0
 
     def wjs_metric_received(self, service_id, job_id, timestamp, value):
+        """
+        Recived a datapoint
+        """
         self.wjs_condition.acquire()
         job = self._wjs_find_job(job_id)
         if job is None:
@@ -79,7 +91,11 @@ class WatchedJobs(object):
 WAIT_INTERVAL = 1.0
 METRIC_INTERVAL = WAIT_INTERVAL * 2
 
+
 class WatchedJob(object):
+    """
+    Each wathed job has an object of WatchedJob
+    """
     def __init__(self, job_id, jobs):
         self.wj_websockets = []
         self.wj_job_id = job_id
@@ -90,8 +106,10 @@ class WatchedJob(object):
         timer = threading.Timer(WAIT_INTERVAL, self.wj_datapoint_send)
         timer.start()
 
-    # Return the rate, if no rate return 0
     def wj_datapoint_add(self, service_id, timestamp, value):
+        """
+        Recived a datapoint of this job
+        """
         if service_id not in self.wj_services:
             service = JobPerService()
             self.wj_services[service_id] = service
@@ -100,8 +118,11 @@ class WatchedJob(object):
         service.jps_datapoint_add(timestamp, value)
 
     def wj_datapoint_send(self):
+        """
+        Send a datapoint to clients
+        """
         dead_websockets = []
-        rate = self.wj_get_rate();
+        rate = self.wj_get_rate()
         json_string = json.dumps({
             "type": "datapoint",
             "rate": rate,
@@ -123,6 +144,9 @@ class WatchedJob(object):
             timer.start()
 
     def wj_get_rate(self):
+        """
+        Return the current rate according the datapoints
+        """
         rate = 0
         for service_id in self.wj_services:
             service = self.wj_services[service_id]
@@ -131,17 +155,25 @@ class WatchedJob(object):
                 rate += service_rate
         return rate
 
+
 class JobPerService(object):
+    """
+    Each service (OST) has an object of JobPerService for each job
+    """
+    # pylint: disable=too-few-public-methods
     def __init__(self):
-        self.jps_value = None;
-        self.jps_timestamp = None;
-	self.jps_rate = None
+        self.jps_value = None
+        self.jps_timestamp = None
+        self.jps_rate = None
 
     def jps_datapoint_add(self, timestamp, value):
+        """
+        A datapoint is recived for this job and this service
+        """
         # If overflow happens, rate will be kept unchanged for one interval
         if (self.jps_timestamp is not None and
-            value >= self.jps_value and
-            timestamp > self.jps_timestamp):
+                value >= self.jps_value and
+                timestamp > self.jps_timestamp):
             diff = value - self.jps_value
             time_diff = timestamp - self.jps_timestamp
             self.jps_rate = diff / time_diff / 1000000
@@ -149,26 +181,36 @@ class JobPerService(object):
         self.jps_value = value
 
 
-watched_jobs = WatchedJobs()
+WATCHED_JOBS = WatchedJobs()
 
-@app.route("/")
+
+@APP.route("/")
 def app_root():
+    """
+    Root of web
+    """
     return render_template("index.html")
 
 
 def tsdb_tags_parse(tsdb_tags, tag_dict):
+    """
+    Parse a TSDB tag string to dictionary
+    """
     tags = tsdb_tags.split()
     for tag in tags:
         pair = tag.split("=")
         if len(pair) != 2:
-            logging.error("tsdb tags [%s] is invalid", tsdb_tags);
+            logging.error("tsdb tags [%s] is invalid", tsdb_tags)
             return -1
         tag_dict[pair[0]] = pair[1]
     return 0
 
 
-@app.route("/metric_post", methods=['POST'])
+@APP.route("/metric_post", methods=['POST'])
 def app_metric_post():
+    """
+    A metric datapoint is recieved from Collectd
+    """
     logging.debug(json.dumps(request.json, indent=4))
     for metric in request.json:
         meta = metric["meta"]
@@ -188,14 +230,18 @@ def app_metric_post():
         job_id = tag_dict["job_id"]
         value = metric["values"][0]
         timestamp = metric["time"]
-        watched_jobs.wjs_metric_received(service_id, job_id, timestamp, value)
+        WATCHED_JOBS.wjs_metric_received(service_id, job_id, timestamp, value)
         logging.debug("service_id :%s, job_id: %s, time: %d, value: %d",
-            service_id, job_id, timestamp, value)
+                      service_id, job_id, timestamp, value)
     return "Succeeded"
 
 
-@app.route("/console_websocket")
+@APP.route("/console_websocket")
 def app_console_websocket():
+    """
+    Start the websocket connection
+    """
+    # pylint: disable=too-many-locals
     if request.environ.get('wsgi.websocket'):
         websocket = request.environ['wsgi.websocket']
         config_string = websocket.receive()
@@ -206,10 +252,10 @@ def app_console_websocket():
         hosts = []
         for host in cluster["hosts"]:
             hosts.append(host["name"])
-        ssh_identity_file = cluster["ssh_identity_file"]
+        identity = cluster["ssh_identity_file"]
         logging.debug("fsname: [%s], hosts: %s", fsname, hosts)
         cluster = lustre_config.LustreCluster(fsname, hosts,
-            ssh_identity_file=ssh_identity_file)
+                                              ssh_identity_file=identity)
         cluster.lc_detect_devices()
         cluster.lc_enable_fifo_for_ost_io()
         cluster.lc_enable_tbf_for_ost_io("jobid")
@@ -219,12 +265,12 @@ def app_console_websocket():
         for job in jobs:
             job_id = job["job_id"]
             tbf_name = lustre_config.tbf_escape_name(job_id)
-            watched_jobs.wjs_watch_job(job_id, websocket)
+            WATCHED_JOBS.wjs_watch_job(job_id, websocket)
             cluster.lc_start_tbf_rule(tbf_name, job_id, 1000)
-            
+
         while not websocket.closed:
             control_command = websocket.receive()
-            logging.debug("command: %s", control_command);
+            logging.debug("command: %s", control_command)
             control = json.loads(control_command)
             job_id = control["job_id"]
             tbf_name = lustre_config.tbf_escape_name(job_id)
@@ -244,15 +290,18 @@ def app_console_websocket():
             websocket.send(json_string)
 
         for job in jobs:
-            watched_jobs.wjs_unwatch_job(job_id, websocket)
-        logging.debug("websocket is closed");
+            WATCHED_JOBS.wjs_unwatch_job(job_id, websocket)
+        logging.debug("websocket is closed")
         return "Success"
     else:
         logging.info("run command is not websocket: %s")
         return "Failure"
 
 
-if __name__ == "__main__":
+def start_web():
+    """
+    Start the web server of LIME
+    """
     logdir = "log"
     if not os.path.exists(logdir):
         os.mkdir(logdir)
@@ -260,6 +309,10 @@ if __name__ == "__main__":
         logging.error("[%s] is not a directory", logdir)
     utils.configure_logging("./")
     monkey.patch_all()
-    http_server = WSGIServer(('0.0.0.0', 24), app,
+    http_server = WSGIServer(('0.0.0.0', 24), APP,
                              handler_class=WebSocketHandler)
     http_server.serve_forever()
+
+
+if __name__ == "__main__":
+    start_web()

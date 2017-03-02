@@ -13,26 +13,41 @@ import ssh_host
 
 
 class LustreDevice(object):
-    def __init__(self, cluster, type, index, host):
+    """
+    Each Lustre device has an object of LustreDevice
+    """
+    # pylint: disable=too-few-public-methods
+    def __init__(self, cluster, service_type, service_index, host):
         self.ld_cluster = cluster
-        self.ld_type = type
-        self.ld_index = index
+        self.ld_service_type = service_type
+        self.ld_service_index = service_index
         self.ld_host = host
 
 
-def find_device_in_list(devices, type, index):
+def find_device_in_list(devices, service_type, service_index):
+    """
+    Find a device according to the service type and index
+    """
     for device in devices:
-        if device.ld_type == type and device.ld_index == index:
+        if (device.ld_service_type == service_type and
+                device.ld_service_index == service_index):
             return device
     return None
 
 
 def version_value(major, minor, patch):
+    """
+    Return a numeric version code based on a version string.  The version
+    code is useful for comparison two version strings to see which is newer.
+    """
     value = (major << 16) | (minor << 8) | patch
     return value
 
 
 def tbf_escape_name(name):
+    """
+    The valid name of a TBF rule is only alpha, number and "_"
+    """
     good_name = ""
     for char in name:
         if char.isalnum() or char == "_":
@@ -46,13 +61,23 @@ class LustreHost(ssh_host.SSHHost):
     """
     Eacho host in a Lustre clustre has an object of LustreHost
     """
+    # pylint: disable=too-many-public-methods,too-many-instance-attributes
     def __init__(self, cluster, hostname, identity_file=None):
         super(LustreHost, self).__init__(hostname, identity_file=identity_file)
         self.lh_devices = []
         self.lh_cluster = cluster
-        self.lh_detect_version()
+        self.lh_lustre_version_string = None
+        self.lh_lustre_version_major = None
+        self.lh_lustre_version_minor = None
+        self.lh_lustre_version_patch = None
+        self.lh_lustre_version_fix = None
+        self.lh_version_value = None
+        self.lh_detect_lustre_version()
 
     def lh_detect_devices(self, cluster_devices):
+        """
+        Detect the devices on this host
+        """
         logging.debug("detecting devices on host [%s]", self.sh_hostname)
         devices = []
 
@@ -74,7 +99,8 @@ class LustreHost(ssh_host.SSHHost):
             match = self.lh_cluster.lc_mdt_regular.match(line)
             if match:
                 mdt_index = match.group("mdt_index")
-                device_name = ("%s-MDT%s" % (self.lh_cluster.lc_fsname, mdt_index))
+                device_name = ("%s-MDT%s" % (self.lh_cluster.lc_fsname,
+                                             mdt_index))
                 logging.debug("device [%s] running on host [%s]",
                               device_name, self.sh_hostname)
                 device = find_device_in_list(cluster_devices, "MDT", mdt_index)
@@ -90,7 +116,8 @@ class LustreHost(ssh_host.SSHHost):
             match = self.lh_cluster.lc_ost_regular.match(line)
             if match:
                 ost_index = match.group("ost_index")
-                device_name = ("%s-OST%s" % (self.lh_cluster.lc_fsname, ost_index))
+                device_name = ("%s-OST%s" % (self.lh_cluster.lc_fsname,
+                                             ost_index))
                 logging.debug("device [%s] running on host [%s]",
                               device_name, self.sh_hostname)
                 device = find_device_in_list(cluster_devices, "OST", ost_index)
@@ -120,7 +147,11 @@ class LustreHost(ssh_host.SSHHost):
         return 0
 
     def lh_enable_tbf_for_ost_io(self, tbf_type):
-        command = ("echo -n tbf %s > /proc/fs/lustre/ost/OSS/ost_io/nrs_policies" % tbf_type)
+        """
+        Change the OST IO NRS policy to TBF
+        """
+        command = ("echo -n tbf %s > "
+                   "/proc/fs/lustre/ost/OSS/ost_io/nrs_policies" % tbf_type)
         retval = self.sh_run(command)
         if retval.cr_exit_status != 0:
             logging.error("failed to run command [%s] on host [%s], "
@@ -133,7 +164,11 @@ class LustreHost(ssh_host.SSHHost):
         return 0
 
     def lh_enable_fifo_for_ost_io(self):
-        command = ("echo -n fifo > /proc/fs/lustre/ost/OSS/ost_io/nrs_policies")
+        """
+        Change the OST IO NRS policy to FIFO
+        """
+        command = ("echo -n fifo > "
+                   "/proc/fs/lustre/ost/OSS/ost_io/nrs_policies")
         retval = self.sh_run(command)
         if retval.cr_exit_status != 0:
             logging.error("failed to run command [%s] on host [%s], "
@@ -146,6 +181,9 @@ class LustreHost(ssh_host.SSHHost):
         return 0
 
     def lh_set_jobid_var(self, jobid_var):
+        """
+        Set the job ID variable
+        """
         command = ("lctl conf_param %s.sys.jobid_var=%s" %
                    (self.lh_cluster.lc_fsname, jobid_var))
         retval = self.sh_run(command)
@@ -160,13 +198,17 @@ class LustreHost(ssh_host.SSHHost):
         return 0
 
     def lh_start_tbf_rule(self, name, expression, rate):
-        # For Lustre version ealier than 2.8.54, no "rate=" or "jobid=" is needed
+        """
+        Start an TBF rule
+        """
         if self.lh_version_value >= version_value(2, 8, 54):
-            command = ("echo -n start %s jobid={%s} rate=%d > /proc/fs/lustre/ost/OSS/ost_io/nrs_tbf_rule" %
-                (name, expression, rate))
+            command = ("echo -n start %s jobid={%s} rate=%d > "
+                       "/proc/fs/lustre/ost/OSS/ost_io/nrs_tbf_rule" %
+                       (name, expression, rate))
         else:
-            command = ("echo -n start %s {%s} %d > /proc/fs/lustre/ost/OSS/ost_io/nrs_tbf_rule" %
-                (name, expression, rate))
+            command = ("echo -n start %s {%s} %d > "
+                       "/proc/fs/lustre/ost/OSS/ost_io/nrs_tbf_rule" %
+                       (name, expression, rate))
         retval = self.sh_run(command)
         if retval.cr_exit_status != 0:
             logging.error("failed to run command [%s] on host [%s], "
@@ -179,12 +221,17 @@ class LustreHost(ssh_host.SSHHost):
         return 0
 
     def lh_change_tbf_rate(self, name, rate):
+        """
+        Change the TBF rate of a rule
+        """
         if self.lh_version_value >= version_value(2, 8, 54):
-            command = ("echo -n change %s rate=%d > /proc/fs/lustre/ost/OSS/ost_io/nrs_tbf_rule" %
-                (name, rate))
+            command = ("echo -n change %s rate=%d > "
+                       "/proc/fs/lustre/ost/OSS/ost_io/nrs_tbf_rule" %
+                       (name, rate))
         else:
-            command = ("echo -n change %s %d > /proc/fs/lustre/ost/OSS/ost_io/nrs_tbf_rule" %
-                (name, rate))
+            command = ("echo -n change %s %d > "
+                       "/proc/fs/lustre/ost/OSS/ost_io/nrs_tbf_rule" %
+                       (name, rate))
         retval = self.sh_run(command)
         if retval.cr_exit_status != 0:
             logging.error("failed to run command [%s] on host [%s], "
@@ -196,8 +243,12 @@ class LustreHost(ssh_host.SSHHost):
             return -1
         return 0
 
-    def lh_detect_version(self):
-        command = ("cat /proc/fs/lustre/version | grep lustre: | awk '{print $2}'")
+    def lh_detect_lustre_version(self):
+        """
+        Detect the Lustre version
+        """
+        command = ("cat /proc/fs/lustre/version | grep lustre: | "
+                   "awk '{print $2}'")
         retval = self.sh_run(command)
         if retval.cr_exit_status != 0:
             logging.error("failed to run command [%s] on host [%s], "
@@ -206,10 +257,10 @@ class LustreHost(ssh_host.SSHHost):
                           retval.cr_exit_status,
                           retval.cr_stdout,
                           retval.cr_stderr)
-            self.lh_lustre_version = None
             return -1
         self.lh_lustre_version_string = retval.cr_stdout.strip()
-        version_pattern = r"^(?P<major>\d+)\.(?P<minor>\d+)\.(?P<patch>\d+)\.(?P<fix>\d+)$"
+        version_pattern = (r"^(?P<major>\d+)\.(?P<minor>\d+)\.(?P<patch>\d+)\."
+                           r"(?P<fix>\d+)$")
         version_regular = re.compile(version_pattern)
         match = version_regular.match(self.lh_lustre_version_string)
         if match:
@@ -223,9 +274,10 @@ class LustreHost(ssh_host.SSHHost):
             return -1
 
         self.lh_version_value = version_value(self.lh_lustre_version_major,
-            self.lh_lustre_version_minor, self.lh_lustre_version_patch)
+                                              self.lh_lustre_version_minor,
+                                              self.lh_lustre_version_patch)
         logging.debug("version_string: %s %d", self.lh_lustre_version_string,
-            self.lh_version_value)
+                      self.lh_version_value)
         return 0
 
 
@@ -253,6 +305,9 @@ class LustreCluster(object):
         self.lc_devices = []
 
     def lc_detect_devices(self):
+        """
+        Detect the devices in this Lustre cluster
+        """
         devices = []
         for host in self.lc_hosts:
             ret = host.lh_detect_devices(devices)
@@ -264,9 +319,12 @@ class LustreCluster(object):
         return 0
 
     def lc_enable_tbf_for_ost_io(self, tbf_type):
+        """
+        Change the OST IO NRS policy to TBF
+        """
         hosts = []
         for device in self.lc_devices:
-            if device.ld_type != "OST":
+            if device.ld_service_type != "OST":
                 continue
             if device.ld_host.sh_hostname in hosts:
                 continue
@@ -279,9 +337,12 @@ class LustreCluster(object):
         return 0
 
     def lc_set_jobid_var(self, jobid_var):
+        """
+        Change the Job ID variable on this cluster
+        """
         done = False
         for device in self.lc_devices:
-            if device.ld_type != "MGS":
+            if device.ld_service_type != "MGS":
                 continue
             ret = device.ld_host.lh_set_jobid_var(jobid_var)
             if ret:
@@ -296,9 +357,12 @@ class LustreCluster(object):
         return 0
 
     def lc_enable_fifo_for_ost_io(self):
+        """
+        Change the OST IO NRS policy to FIFO
+        """
         hosts = []
         for device in self.lc_devices:
-            if device.ld_type != "OST":
+            if device.ld_service_type != "OST":
                 continue
             if device.ld_host.sh_hostname in hosts:
                 continue
@@ -311,9 +375,12 @@ class LustreCluster(object):
         return 0
 
     def lc_start_tbf_rule(self, name, expression, rate):
+        """
+        Start a TBF rule
+        """
         hosts = []
         for device in self.lc_devices:
-            if device.ld_type != "OST":
+            if device.ld_service_type != "OST":
                 continue
             if device.ld_host.sh_hostname in hosts:
                 continue
@@ -326,9 +393,12 @@ class LustreCluster(object):
         return 0
 
     def lc_change_tbf_rate(self, name, rate):
+        """
+        Change rate of a TBF rule
+        """
         hosts = []
         for device in self.lc_devices:
-            if device.ld_type != "OST":
+            if device.ld_service_type != "OST":
                 continue
             if device.ld_host.sh_hostname in hosts:
                 continue
@@ -341,8 +411,15 @@ class LustreCluster(object):
         return 0
 
 
-if __name__ == "__main__":
+def test_tbf():
+    """
+    Check whether TBF works well
+    """
     cluster = LustreCluster("lustre", ["10.0.0.24"])
     cluster.lc_detect_devices()
     cluster.lc_enable_tbf_for_ost_io("nid")
     cluster.lc_set_jobid_var("procname_uid")
+
+
+if __name__ == "__main__":
+    test_tbf()

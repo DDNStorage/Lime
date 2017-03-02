@@ -1,4 +1,10 @@
-import json
+# Copyright (c) 2017 DataDirect Networks, Inc.
+# All Rights Reserved.
+# Author: lixi@ddn.com
+"""
+Misc utility library
+"""
+
 import os
 import time
 import signal
@@ -10,6 +16,7 @@ import logging.handlers
 import flask
 import datetime
 import dateutil.tz
+
 
 def read_one_line(filename):
     """
@@ -88,10 +95,13 @@ class CommandResult(object):
         self.cr_duration = duration
 
     def cr_jsonify(self):
+        """
+        Return the json string of the result
+        """
         return flask.jsonify(exit_status=self.cr_exit_status,
                              stdout=self.cr_stdout,
                              stderr=self.cr_stderr,
-                             duration=self.cr_duration);
+                             duration=self.cr_duration)
 
 
 class CommandJob(object):
@@ -317,6 +327,7 @@ def run(command, timeout=None, stdout_tee=None, stderr_tee=None, stdin=None,
                      quit_func=quit_func)
     return job.cj_run()
 
+
 def configure_logging(resultsdir):
     """
     Configure the logging levels
@@ -353,6 +364,7 @@ def configure_logging(resultsdir):
     logging.root.addHandler(console_handler)
     logging.root.addHandler(warning_handler)
     logging.root.addHandler(error_handler)
+
 
 def utcnow():
     """
