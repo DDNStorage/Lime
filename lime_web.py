@@ -9,6 +9,7 @@ import os
 import threading
 import logging
 import logging.handlers
+import time
 from gevent.wsgi import WSGIServer
 from gevent import monkey
 from geventwebsocket.handler import WebSocketHandler
@@ -88,8 +89,7 @@ class WatchedJobs(object):
         self.wjs_condition.release()
         return 0
 
-WAIT_INTERVAL = 1.0
-METRIC_INTERVAL = WAIT_INTERVAL * 2
+METRIC_INTERVAL = 1.0
 
 
 class WatchedJob(object):
@@ -103,7 +103,7 @@ class WatchedJob(object):
         self.wj_value = None
         self.wj_timestamp = None
         self.wj_services = {}
-        timer = threading.Timer(WAIT_INTERVAL, self.wj_datapoint_send)
+        timer = threading.Timer(METRIC_INTERVAL, self.wj_datapoint_send)
         timer.start()
 
     def wj_datapoint_add(self, service_id, timestamp, value):
@@ -125,6 +125,7 @@ class WatchedJob(object):
         rate = self.wj_get_rate()
         json_string = json.dumps({
             "type": "datapoint",
+            "time": time.time(),
             "rate": rate,
             "job_id": self.wj_job_id})
         for websocket in self.wj_websockets:
@@ -241,7 +242,8 @@ def app_console_websocket():
     """
     Start the websocket connection
     """
-    # pylint: disable=too-many-locals
+    # pylint: disable=too-many-locals,too-many-branches
+    # pylint: disable=too-many-return-statements,too-many-statements
     if request.environ.get('wsgi.websocket'):
         websocket = request.environ['wsgi.websocket']
         config_string = websocket.receive()
@@ -256,10 +258,31 @@ def app_console_websocket():
         logging.debug("fsname: [%s], hosts: %s", fsname, hosts)
         cluster = lustre_config.LustreCluster(fsname, hosts,
                                               ssh_identity_file=identity)
-        cluster.lc_detect_devices()
-        cluster.lc_enable_fifo_for_ost_io()
-        cluster.lc_enable_tbf_for_ost_io("jobid")
-        cluster.lc_set_jobid_var("procname_uid")
+
+        json_string = json.dumps({
+            "type": "command_result",
+            "command": "init_cluster",
+            "result": "failure"})
+        ret = cluster.lc_detect_devices()
+        if ret:
+            websocket.send(json_string)
+            return "Failure"
+        ret = cluster.lc_check_cpt_for_oss()
+        if ret:
+            websocket.send(json_string)
+            return "Failure"
+        ret = cluster.lc_enable_fifo_for_ost_io()
+        if ret:
+            websocket.send(json_string)
+            return "Failure"
+        ret = cluster.lc_enable_tbf_for_ost_io("jobid")
+        if ret:
+            websocket.send(json_string)
+            return "Failure"
+        ret = cluster.lc_set_jobid_var("procname_uid")
+        if ret:
+            websocket.send(json_string)
+            return "Failure"
 
         jobs = config["jobs"]
         for job in jobs:
