@@ -304,6 +304,22 @@ class LustreHost(ssh_host.SSHHost):
             return -1
         return 0
 
+    def lh_enable_fake_io(self):
+        """
+        Enable the fake IO
+        """
+        command = ("lctl set_param fail_loc=0x238")
+        retval = self.sh_run(command)
+        if retval.cr_exit_status != 0:
+            logging.error("failed to run command [%s] on host [%s], "
+                          "ret = [%d], stdout = [%s], stderr = [%s]",
+                          command, self.sh_hostname,
+                          retval.cr_exit_status,
+                          retval.cr_stdout,
+                          retval.cr_stderr)
+            return -1
+        return 0
+
 
 class LustreCluster(object):
     """
@@ -355,6 +371,24 @@ class LustreCluster(object):
             ret = device.ld_host.lh_check_cpt()
             if ret:
                 logging.error("failed to check CPT on host [%s]",
+                              device.ld_host.sh_hostname)
+                return ret
+            hosts.append(device.ld_host.sh_hostname)
+        return 0
+
+    def lc_enable_fake_io_for_oss(self):
+        """
+        Enable fake IO on OSS
+        """
+        hosts = []
+        for device in self.lc_devices:
+            if device.ld_service_type != "OST":
+                continue
+            if device.ld_host.sh_hostname in hosts:
+                continue
+            ret = device.ld_host.lh_enable_fake_io()
+            if ret:
+                logging.error("failed to enable fake IO on host [%s]",
                               device.ld_host.sh_hostname)
                 return ret
             hosts.append(device.ld_host.sh_hostname)

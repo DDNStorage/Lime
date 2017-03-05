@@ -16,6 +16,7 @@ import logging.handlers
 import flask
 import datetime
 import dateutil.tz
+import threading
 
 
 def read_one_line(filename):
@@ -380,3 +381,26 @@ def local_strftime(utc_datetime, fmt):
     """
     local_datetime = utc_datetime.astimezone(dateutil.tz.tzlocal())
     return local_datetime.strftime(fmt)
+
+def thread_start(target, args):
+    """
+    Wrap the target function and start a thread to run it
+    """
+    def target_wrap(*args, **kwargs):
+        """
+        Wrap the target function
+        """
+        # pylint: disable=bare-except
+        ret = None
+        try:
+            ret = target(*args, **kwargs)
+        except:
+            logging.error("exception when running thread: [%s]",
+                          traceback.format_exc())
+        return ret
+
+    run_thread = threading.Thread(target=target_wrap,
+                                  args=args)
+    run_thread.setDaemon(True)
+    run_thread.start()
+    return run_thread

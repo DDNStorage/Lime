@@ -3,7 +3,10 @@
         "name": "lustre",
         "hosts": [
             {
-                "name": "server4"
+                "name": "server1"
+            },
+            {
+                "name": "server9"
             }
         ],
         "ssh_identity_file": "/root/.ssh/id_dsa"

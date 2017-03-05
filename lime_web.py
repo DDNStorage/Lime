@@ -22,6 +22,9 @@ from flask import Flask, render_template, request
 APP = Flask(__name__)
 
 
+METRIC_INTERVAL = 1
+
+
 class WatchedJobs(object):
     """
     All the watched Jobs will be group here
@@ -29,6 +32,7 @@ class WatchedJobs(object):
     def __init__(self):
         self.wjs_jobs = {}
         self.wjs_condition = threading.Condition()
+        utils.thread_start(self.wjs_datapoints_send, ())
 
     def _wjs_find_job(self, job_id):
         """
@@ -89,7 +93,19 @@ class WatchedJobs(object):
         self.wjs_condition.release()
         return 0
 
-METRIC_INTERVAL = 1.0
+    def wjs_datapoints_send(self):
+        """
+        Send datapoints of jobs
+        """
+        while True:
+            logging.debug("sending datapoints of jobs")
+            self.wjs_condition.acquire()
+            for job_id, job in self.wjs_jobs.iteritems():
+                logging.error("sending datapoint of job [%s]", job_id)
+                job.wj_datapoint_send()
+            self.wjs_condition.release()
+            logging.debug("sent datapoints of jobs")
+            time.sleep(METRIC_INTERVAL)
 
 
 class WatchedJob(object):
@@ -103,8 +119,7 @@ class WatchedJob(object):
         self.wj_value = None
         self.wj_timestamp = None
         self.wj_services = {}
-        timer = threading.Timer(METRIC_INTERVAL, self.wj_datapoint_send)
-        timer.start()
+        self.wj_rate_limit = None
 
     def wj_datapoint_add(self, service_id, timestamp, value):
         """
@@ -140,9 +155,6 @@ class WatchedJob(object):
             self.wj_websockets.remove(websocket)
         if len(self.wj_websockets) == 0:
             del self.wj_jobs.wjs_jobs[self.wj_job_id]
-        else:
-            timer = threading.Timer(METRIC_INTERVAL, self.wj_datapoint_send)
-            timer.start()
 
     def wj_get_rate(self):
         """
@@ -163,9 +175,11 @@ class JobPerService(object):
     """
     # pylint: disable=too-few-public-methods
     def __init__(self):
+        # Data collected from collectd
         self.jps_value = None
         self.jps_timestamp = None
         self.jps_rate = None
+        # Data collected from SSH wather
 
     def jps_datapoint_add(self, timestamp, value):
         """
@@ -298,10 +312,12 @@ def app_console_websocket():
             job_id = control["job_id"]
             tbf_name = lustre_config.tbf_escape_name(job_id)
             rate = control["rate"]
+            job = WATCHED_JOBS.wjs_find_job(job_id)
             ret = cluster.lc_change_tbf_rate(tbf_name, int(rate))
-            if ret:
+            if job is None or ret:
                 result = "failure"
             else:
+                job.wj_rate_limit = rate
                 result = "success"
             json_string = json.dumps({
                 "type": "command_result",
