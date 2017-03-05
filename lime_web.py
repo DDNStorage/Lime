@@ -197,6 +197,7 @@ class JobPerService(object):
 
 
 WATCHED_JOBS = WatchedJobs()
+CLUSTER = None
 
 
 @APP.route("/")
@@ -262,48 +263,12 @@ def app_console_websocket():
         websocket = request.environ['wsgi.websocket']
         config_string = websocket.receive()
         config = json.loads(config_string)
-        logging.debug("received config: %s", config)
-        cluster = config["cluster"]
-        fsname = cluster["name"]
-        hosts = []
-        for host in cluster["hosts"]:
-            hosts.append(host["name"])
-        identity = cluster["ssh_identity_file"]
-        logging.debug("fsname: [%s], hosts: %s", fsname, hosts)
-        cluster = lustre_config.LustreCluster(fsname, hosts,
-                                              ssh_identity_file=identity)
-
-        json_string = json.dumps({
-            "type": "command_result",
-            "command": "init_cluster",
-            "result": "failure"})
-        ret = cluster.lc_detect_devices()
-        if ret:
-            websocket.send(json_string)
-            return "Failure"
-        ret = cluster.lc_check_cpt_for_oss()
-        if ret:
-            websocket.send(json_string)
-            return "Failure"
-        ret = cluster.lc_enable_fifo_for_ost_io()
-        if ret:
-            websocket.send(json_string)
-            return "Failure"
-        ret = cluster.lc_enable_tbf_for_ost_io("jobid")
-        if ret:
-            websocket.send(json_string)
-            return "Failure"
-        ret = cluster.lc_set_jobid_var("procname_uid")
-        if ret:
-            websocket.send(json_string)
-            return "Failure"
-
         jobs = config["jobs"]
         for job in jobs:
             job_id = job["job_id"]
             tbf_name = lustre_config.tbf_escape_name(job_id)
             WATCHED_JOBS.wjs_watch_job(job_id, websocket)
-            cluster.lc_start_tbf_rule(tbf_name, job_id, 1000)
+            CLUSTER.lc_start_tbf_rule(tbf_name, job_id, 1000)
 
         while not websocket.closed:
             control_command = websocket.receive()
@@ -313,7 +278,7 @@ def app_console_websocket():
             tbf_name = lustre_config.tbf_escape_name(job_id)
             rate = control["rate"]
             job = WATCHED_JOBS.wjs_find_job(job_id)
-            ret = cluster.lc_change_tbf_rate(tbf_name, int(rate))
+            ret = CLUSTER.lc_change_tbf_rate(tbf_name, int(rate))
             if job is None or ret:
                 result = "failure"
             else:
@@ -337,6 +302,52 @@ def app_console_websocket():
         return "Failure"
 
 
+def load_config():
+    """
+    Load configuration file and do some initialization
+    """
+    # pylint: disable=global-statement
+    global CLUSTER
+    json_data = open('static/lime_config.json')
+    config = json.load(json_data)
+
+    logging.debug("config: %s", config)
+    cluster = config["cluster"]
+    fsname = cluster["name"]
+    hosts = []
+    for host in cluster["hosts"]:
+        hosts.append(host["name"])
+    identity = cluster["ssh_identity_file"]
+    logging.debug("fsname: [%s], hosts: %s", fsname, hosts)
+    CLUSTER = lustre_config.LustreCluster(fsname, hosts,
+                                          ssh_identity_file=identity)
+    ret = CLUSTER.lc_restart_collectd()
+    if ret:
+        return -1
+
+    ret = CLUSTER.lc_detect_devices()
+    if ret:
+        return -1
+
+    ret = CLUSTER.lc_check_cpt_for_oss()
+    if ret:
+        return -1
+
+    ret = CLUSTER.lc_enable_fifo_for_ost_io()
+    if ret:
+        return -1
+
+    ret = CLUSTER.lc_enable_tbf_for_ost_io("jobid")
+    if ret:
+        return -1
+
+    ret = CLUSTER.lc_set_jobid_var("procname_uid")
+    if ret:
+        return -1
+
+    return 0
+
+
 def start_web():
     """
     Start the web server of LIME
@@ -347,6 +358,9 @@ def start_web():
     elif not os.path.isdir(logdir):
         logging.error("[%s] is not a directory", logdir)
     utils.configure_logging("./")
+    ret = load_config()
+    if ret:
+        logging.error("failed to load config")
     monkey.patch_all()
     http_server = WSGIServer(('0.0.0.0', 24), APP,
                              handler_class=WebSocketHandler)

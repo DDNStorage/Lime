@@ -320,6 +320,22 @@ class LustreHost(ssh_host.SSHHost):
             return -1
         return 0
 
+    def lh_restart_collectd(self):
+        """
+        Restart collectd
+        """
+        command = ("service collectd restart")
+        retval = self.sh_run(command)
+        if retval.cr_exit_status != 0:
+            logging.error("failed to run command [%s] on host [%s], "
+                          "ret = [%d], stdout = [%s], stderr = [%s]",
+                          command, self.sh_hostname,
+                          retval.cr_exit_status,
+                          retval.cr_stdout,
+                          retval.cr_stderr)
+            return -1
+        return 0
+
 
 class LustreCluster(object):
     """
@@ -482,6 +498,22 @@ class LustreCluster(object):
             if ret:
                 logging.error("failed to start TBF rule [%s] on host [%s]",
                               name, device.ld_host.sh_hostname)
+                return ret
+            hosts.append(device.ld_host.sh_hostname)
+        return 0
+
+    def lc_restart_collectd(self):
+        """
+        Restart collectd
+        """
+        hosts = []
+        for device in self.lc_devices:
+            if device.ld_host.sh_hostname in hosts:
+                continue
+            ret = device.ld_host.lh_restart_collectd()
+            if ret:
+                logging.error("failed to restart collectd on host [%s]",
+                              device.ld_host.sh_hostname)
                 return ret
             hosts.append(device.ld_host.sh_hostname)
         return 0
