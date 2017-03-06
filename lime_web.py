@@ -11,7 +11,7 @@ import logging
 import logging.handlers
 import time
 from gevent.wsgi import WSGIServer
-from gevent import monkey,sleep
+from gevent import monkey, sleep
 from geventwebsocket.handler import WebSocketHandler
 from geventwebsocket.exceptions import WebSocketError
 
@@ -25,6 +25,8 @@ APP = Flask(__name__)
 METRIC_INTERVAL = 1
 CLUSTER = None
 DEFAULT_RATE_LIMIT = 10000
+MIN_RATE_LIMIT = 10
+
 
 class WatchedJobs(object):
     """
@@ -108,8 +110,8 @@ class WatchedJobs(object):
                     deleted_jobs.append(job_id)
 
             for job_id in deleted_jobs:
-                # TODO: remove the limiations
-                del self.wj_jobs.wjs_jobs[job_id]
+                # IMPROVE: remove the limiations
+                del self.wjs_jobs[job_id]
 
             self.wjs_condition.release()
             logging.debug("sent datapoints of jobs")
@@ -120,11 +122,13 @@ class HostForJob(object):
     """
     Each host has an object of HostForJob for each job
     """
+    # pylint: disable=too-few-public-methods
     def __init__(self, host):
         self.hfj_host = host
         # Array of services for job
         self.hfj_services = {}
         self.hfj_rate_limit = None
+        self.lfj_rate = 0
 
 
 class WatchedJob(object):
@@ -191,6 +195,10 @@ class WatchedJob(object):
         return 0
 
     def wj_rate_tune(self, rate):
+        # pylint: disable=too-many-branches
+        """
+        Tune the setting according to rate
+        """
         if self.wj_rate_limit is None:
             for hostname in self.wj_hosts:
                 host = self.wj_hosts[hostname]
@@ -200,7 +208,7 @@ class WatchedJob(object):
                                                      DEFAULT_RATE_LIMIT)
             return
         if self.wj_current_rate_limit != self.wj_rate_limit:
-            # TODO: not very good algorithm
+            # IMPROVE: not very good algorithm
             rate_limit = self.wj_rate_limit / len(self.wj_hosts)
             for hostname in self.wj_hosts:
                 host = self.wj_hosts[hostname]
@@ -209,16 +217,61 @@ class WatchedJob(object):
                                                  rate_limit)
             self.wj_current_rate_limit = self.wj_rate_limit
 
+        if rate > self.wj_rate_limit * 11 / 10:
+            # Decrease the limit of the host with highest rate limit
+            selected = None
+            for hostname in self.wj_hosts:
+                host = self.wj_hosts[hostname]
+                if (selected is None or
+                        selected.hfj_rate_limit < host.hfj_rate_limit):
+                    selected = host
+            if selected is None:
+                logging.error("no selected host to decrease rate")
+            diff = rate - self.wj_rate_limit
+            if diff + MIN_RATE_LIMIT > selected.hfj_rate_limit:
+                selected.hfj_rate_limit = MIN_RATE_LIMIT
+            else:
+                selected.hfj_rate_limit -= diff
+            logging.error("decreasing rate of host [%s] for job [%s] to [%d]",
+                          selected.hfj_host.sh_hostname,
+                          self.wj_job_id,
+                          selected.hfj_rate_limit)
+            selected.hfj_host.lh_change_tbf_rate(self.wj_tbf_name,
+                                                 selected.hfj_rate_limit)
+
+        if rate < self.wj_rate_limit * 9 / 10:
+            # Increase the limit of the host with lowest rate limit
+            selected = None
+            for hostname in self.wj_hosts:
+                host = self.wj_hosts[hostname]
+                if (selected is None or
+                        selected.hfj_rate_limit > host.hfj_rate_limit):
+                    selected = host
+            if selected is None:
+                logging.error("no selected host to increase rate")
+            diff = self.wj_rate_limit - rate
+            selected.hfj_rate_limit += diff
+            logging.error("increasing rate of host [%s] for job [%s] to [%d]",
+                          selected.hfj_host.sh_hostname,
+                          self.wj_job_id,
+                          selected.hfj_rate_limit)
+            selected.hfj_host.lh_change_tbf_rate(self.wj_tbf_name,
+                                                 selected.hfj_rate_limit)
+
     def wj_rate_get(self):
         """
         Return the current rate according the datapoints
         """
         rate = 0
-        for service_id in self.wj_services:
-            service = self.wj_services[service_id]
-            service_rate = service.sfj_rate
-            if service_rate is not None:
-                rate += service_rate
+        for hostname in self.wj_hosts:
+            host = self.wj_hosts[hostname]
+            host.lfj_rate = 0
+            for service_id in host.hfj_services:
+                service = host.hfj_services[service_id]
+                service_rate = service.sfj_rate
+                if service_rate is not None:
+                    rate += service_rate
+                    host.lfj_rate += service_rate
         self.wj_rate_tune(rate)
         return rate
 
