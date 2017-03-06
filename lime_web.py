@@ -11,7 +11,7 @@ import logging
 import logging.handlers
 import time
 from gevent.wsgi import WSGIServer
-from gevent import monkey
+from gevent import monkey,sleep
 from geventwebsocket.handler import WebSocketHandler
 from geventwebsocket.exceptions import WebSocketError
 
@@ -23,7 +23,8 @@ APP = Flask(__name__)
 
 
 METRIC_INTERVAL = 1
-
+CLUSTER = None
+DEFAULT_RATE_LIMIT = 10000
 
 class WatchedJobs(object):
     """
@@ -102,17 +103,28 @@ class WatchedJobs(object):
             self.wjs_condition.acquire()
             deleted_jobs = []
             for job_id, job in self.wjs_jobs.iteritems():
-                logging.error("sending datapoint of job [%s]", job_id)
                 ret = job.wj_datapoint_send()
                 if ret == 1:
                     deleted_jobs.append(job_id)
 
             for job_id in deleted_jobs:
+                # TODO: remove the limiations
                 del self.wj_jobs.wjs_jobs[job_id]
 
             self.wjs_condition.release()
             logging.debug("sent datapoints of jobs")
-            time.sleep(METRIC_INTERVAL)
+            sleep(METRIC_INTERVAL)
+
+
+class HostForJob(object):
+    """
+    Each host has an object of HostForJob for each job
+    """
+    def __init__(self, host):
+        self.hfj_host = host
+        # Array of services for job
+        self.hfj_services = {}
+        self.hfj_rate_limit = None
 
 
 class WatchedJob(object):
@@ -128,26 +140,38 @@ class WatchedJob(object):
         self.wj_timestamp = None
         self.wj_services = {}
         self.wj_rate_limit = None
+        self.wj_current_rate_limit = None
+        # Host for each job
         self.wj_hosts = {}
+        self.wj_tbf_name = lustre_config.tbf_escape_name(job_id)
 
     def wj_datapoint_add(self, service_id, timestamp, value):
         """
         Recived a datapoint of this job
         """
         if service_id not in self.wj_services:
-            service = JobPerService()
-            logging.error("service_id: %s", service_id)
+            service = ServiceForJob()
+            host = CLUSTER.lc_map_service_host[service_id]
+            hostname = host.sh_hostname
+            if hostname not in self.wj_hosts:
+                logging.error("service [%s] is on host [%s]", service_id,
+                              hostname)
+                host_for_job = HostForJob(host)
+                self.wj_hosts[hostname] = host_for_job
+            else:
+                host_for_job = self.wj_hosts[hostname]
+            host_for_job.hfj_services[service_id] = service
             self.wj_services[service_id] = service
         else:
             service = self.wj_services[service_id]
-        service.jps_datapoint_add(timestamp, value)
+        service.sfj_datapoint_add(timestamp, value)
 
     def wj_datapoint_send(self):
         """
         Send a datapoint to clients
         """
         dead_websockets = []
-        rate = self.wj_get_rate()
+        rate = self.wj_rate_get()
         json_string = json.dumps({
             "type": "datapoint",
             "time": time.time(),
@@ -166,48 +190,66 @@ class WatchedJob(object):
             return 1
         return 0
 
-    def wj_get_rate(self):
+    def wj_rate_tune(self, rate):
+        if self.wj_rate_limit is None:
+            for hostname in self.wj_hosts:
+                host = self.wj_hosts[hostname]
+                if host.hfj_rate_limit is not None:
+                    host.hfj_rate_limit = None
+                    host.hfj_host.lh_change_tbf_rate(self.wj_tbf_name,
+                                                     DEFAULT_RATE_LIMIT)
+            return
+        if self.wj_current_rate_limit != self.wj_rate_limit:
+            # TODO: not very good algorithm
+            rate_limit = self.wj_rate_limit / len(self.wj_hosts)
+            for hostname in self.wj_hosts:
+                host = self.wj_hosts[hostname]
+                host.hfj_rate_limit = rate_limit
+                host.hfj_host.lh_change_tbf_rate(self.wj_tbf_name,
+                                                 rate_limit)
+            self.wj_current_rate_limit = self.wj_rate_limit
+
+    def wj_rate_get(self):
         """
         Return the current rate according the datapoints
         """
         rate = 0
         for service_id in self.wj_services:
             service = self.wj_services[service_id]
-            service_rate = service.jps_rate
+            service_rate = service.sfj_rate
             if service_rate is not None:
                 rate += service_rate
+        self.wj_rate_tune(rate)
         return rate
 
 
-class JobPerService(object):
+class ServiceForJob(object):
     """
-    Each service (OST) has an object of JobPerService for each job
+    Each service (OST) has an object of ServiceForJob for each job
     """
     # pylint: disable=too-few-public-methods
     def __init__(self):
         # Data collected from collectd
-        self.jps_value = None
-        self.jps_timestamp = None
-        self.jps_rate = None
-        # Data collected from SSH wather
+        self.sfj_value = None
+        self.sfj_timestamp = None
+        self.sfj_rate = None
 
-    def jps_datapoint_add(self, timestamp, value):
+    def sfj_datapoint_add(self, timestamp, value):
         """
         A datapoint is recived for this job and this service
         """
         # If overflow happens, rate will be kept unchanged for one interval
-        if (self.jps_timestamp is not None and
-                value >= self.jps_value and
-                timestamp > self.jps_timestamp):
-            diff = value - self.jps_value
-            time_diff = timestamp - self.jps_timestamp
-            self.jps_rate = diff / time_diff / 1000000
-        self.jps_timestamp = timestamp
-        self.jps_value = value
+        if (self.sfj_timestamp is not None and
+                value >= self.sfj_value and
+                timestamp > self.sfj_timestamp):
+            diff = value - self.sfj_value
+            time_diff = timestamp - self.sfj_timestamp
+            self.sfj_rate = diff / time_diff / 1000000
+        self.sfj_timestamp = timestamp
+        self.sfj_value = value
 
 
 WATCHED_JOBS = WatchedJobs()
-CLUSTER = None
 
 
 @APP.route("/")
@@ -278,7 +320,7 @@ def app_console_websocket():
             job_id = job["job_id"]
             tbf_name = lustre_config.tbf_escape_name(job_id)
             WATCHED_JOBS.wjs_watch_job(job_id, websocket)
-            CLUSTER.lc_start_tbf_rule(tbf_name, job_id, 1000)
+            CLUSTER.lc_start_tbf_rule(tbf_name, job_id, DEFAULT_RATE_LIMIT)
 
         while not websocket.closed:
             control_command = websocket.receive()
@@ -288,11 +330,10 @@ def app_console_websocket():
             tbf_name = lustre_config.tbf_escape_name(job_id)
             rate = control["rate"]
             job = WATCHED_JOBS.wjs_find_job(job_id)
-            ret = CLUSTER.lc_change_tbf_rate(tbf_name, int(rate))
-            if job is None or ret:
+            if job is None:
                 result = "failure"
             else:
-                job.wj_rate_limit = rate
+                job.wj_rate_limit = int(rate)
                 result = "success"
             json_string = json.dumps({
                 "type": "command_result",

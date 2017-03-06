@@ -63,7 +63,7 @@ class LustreHost(ssh_host.SSHHost):
         self.lh_version_value = None
         self.lh_detect_lustre_version()
 
-    def lh_detect_services(self, cluster_services):
+    def lh_detect_services(self, cluster_services, map_service_host):
         """
         Detect the services on this host
         """
@@ -100,6 +100,7 @@ class LustreHost(ssh_host.SSHHost):
                                         self)
                 cluster_services[service_name] = service
                 services[service_name] = service
+                map_service_host[service_name] = self
 
             match = self.lh_cluster.lc_ost_regular.match(line)
             if match:
@@ -116,6 +117,7 @@ class LustreHost(ssh_host.SSHHost):
                                         self)
                 cluster_services[service_name] = service
                 services[service_name] = service
+                map_service_host[service_name] = self
 
             match = self.lh_cluster.lc_mgs_pattern.match(line)
             if match:
@@ -129,6 +131,7 @@ class LustreHost(ssh_host.SSHHost):
                 service = LustreService(self.lh_cluster, "MGS", 0, self)
                 cluster_services[service_name] = service
                 services[service_name] = service
+                map_service_host[service_name] = self
         self.lh_services = services
         return 0
 
@@ -345,19 +348,23 @@ class LustreCluster(object):
             host = LustreHost(self, hostname, identity_file=ssh_identity_file)
             self.lc_hosts.append(host)
         self.lc_services = {}
+        # Mapping from service name to host
+        self.lc_map_service_host = {}
 
     def lc_detect_services(self):
         """
         Detect the services in this Lustre cluster
         """
         services = {}
+        map_service_host = {}
         for host in self.lc_hosts:
-            ret = host.lh_detect_services(services)
+            ret = host.lh_detect_services(services, map_service_host)
             if ret:
                 logging.error("failed to detect services on host [%s]",
                               host.sh_hostname)
                 return ret
         self.lc_services = services
+        self.lc_map_service_host = map_service_host
         return 0
 
     def lc_check_cpt_for_oss(self):
