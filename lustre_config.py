@@ -12,27 +12,16 @@ import logging
 import ssh_host
 
 
-class LustreDevice(object):
+class LustreService(object):
     """
-    Each Lustre device has an object of LustreDevice
+    Each Lustre service has an object of LustreService
     """
     # pylint: disable=too-few-public-methods
     def __init__(self, cluster, service_type, service_index, host):
-        self.ld_cluster = cluster
-        self.ld_service_type = service_type
-        self.ld_service_index = service_index
-        self.ld_host = host
-
-
-def find_device_in_list(devices, service_type, service_index):
-    """
-    Find a device according to the service type and index
-    """
-    for device in devices:
-        if (device.ld_service_type == service_type and
-                device.ld_service_index == service_index):
-            return device
-    return None
+        self.ls_cluster = cluster
+        self.ls_service_type = service_type
+        self.ls_service_index = service_index
+        self.ls_host = host
 
 
 def version_value(major, minor, patch):
@@ -64,7 +53,7 @@ class LustreHost(ssh_host.SSHHost):
     # pylint: disable=too-many-public-methods,too-many-instance-attributes
     def __init__(self, cluster, hostname, identity_file=None):
         super(LustreHost, self).__init__(hostname, identity_file=identity_file)
-        self.lh_devices = []
+        self.lh_services = {}
         self.lh_cluster = cluster
         self.lh_lustre_version_string = None
         self.lh_lustre_version_major = None
@@ -74,12 +63,12 @@ class LustreHost(ssh_host.SSHHost):
         self.lh_version_value = None
         self.lh_detect_lustre_version()
 
-    def lh_detect_devices(self, cluster_devices):
+    def lh_detect_services(self, cluster_services):
         """
-        Detect the devices on this host
+        Detect the services on this host
         """
-        logging.debug("detecting devices on host [%s]", self.sh_hostname)
-        devices = []
+        logging.debug("detecting services on host [%s]", self.sh_hostname)
+        services = {}
 
         command = ("lctl dl")
         retval = self.sh_run(command)
@@ -99,51 +88,48 @@ class LustreHost(ssh_host.SSHHost):
             match = self.lh_cluster.lc_mdt_regular.match(line)
             if match:
                 mdt_index = match.group("mdt_index")
-                device_name = ("%s-MDT%s" % (self.lh_cluster.lc_fsname,
-                                             mdt_index))
-                logging.debug("device [%s] running on host [%s]",
-                              device_name, self.sh_hostname)
-                device = find_device_in_list(cluster_devices, "MDT", mdt_index)
-                if device is not None:
-                    logging.error("two hosts [%s] and [%s] for device [%s]",
-                                  device.ld_host.sh_hostname,
-                                  self.sh_hostname, device_name)
+                service_name = ("MDT%s" % (mdt_index))
+                logging.debug("service [%s] running on host [%s]",
+                              service_name, self.sh_hostname)
+                if service_name in cluster_services:
+                    logging.error("two hosts [%s] and [%s] for service [%s]",
+                                  service.ls_host.sh_hostname,
+                                  self.sh_hostname, service_name)
                     return -1
-                device = LustreDevice(self.lh_cluster, "MDT", mdt_index, self)
-                cluster_devices.append(device)
-                devices.append(device)
+                service = LustreService(self.lh_cluster, "MDT", mdt_index,
+                                        self)
+                cluster_services[service_name] = service
+                services[service_name] = service
 
             match = self.lh_cluster.lc_ost_regular.match(line)
             if match:
                 ost_index = match.group("ost_index")
-                device_name = ("%s-OST%s" % (self.lh_cluster.lc_fsname,
-                                             ost_index))
-                logging.debug("device [%s] running on host [%s]",
-                              device_name, self.sh_hostname)
-                device = find_device_in_list(cluster_devices, "OST", ost_index)
-                if device is not None:
-                    logging.error("two hosts [%s] and [%s] for device [%s]",
-                                  device.ld_host.sh_hostname,
-                                  self.sh_hostname, device_name)
+                service_name = ("OST%s" % (ost_index))
+                logging.debug("service [%s] running on host [%s]",
+                              service_name, self.sh_hostname)
+                if service_name in cluster_services:
+                    logging.error("two hosts [%s] and [%s] for service [%s]",
+                                  service.ls_host.sh_hostname,
+                                  self.sh_hostname, service_name)
                     return -1
-                device = LustreDevice(self.lh_cluster, "OST", ost_index, self)
-                cluster_devices.append(device)
-                devices.append(device)
+                service = LustreService(self.lh_cluster, "OST", ost_index,
+                                        self)
+                cluster_services[service_name] = service
+                services[service_name] = service
 
             match = self.lh_cluster.lc_mgs_pattern.match(line)
             if match:
-                device_name = "MGS"
-                logging.debug("device [%s] running on host [%s]",
-                              device_name, self.sh_hostname)
-                device = find_device_in_list(cluster_devices, "MGS", 0)
-                if device is not None:
-                    logging.error("two hosts [%s] and [%s] for device [%s]",
-                                  device.ld_host.sh_hostname,
-                                  self.sh_hostname, device_name)
-                device = LustreDevice(self.lh_cluster, "MGS", 0, self)
-                cluster_devices.append(device)
-                devices.append(device)
-        self.lh_devices = devices
+                service_name = "MGS"
+                logging.debug("service [%s] running on host [%s]",
+                              service_name, self.sh_hostname)
+                if service_name in cluster_services:
+                    logging.error("two hosts [%s] and [%s] for service [%s]",
+                                  service.ls_host.sh_hostname,
+                                  self.sh_hostname, service_name)
+                service = LustreService(self.lh_cluster, "MGS", 0, self)
+                cluster_services[service_name] = service
+                services[service_name] = service
+        self.lh_services = services
         return 0
 
     def lh_enable_tbf_for_ost_io(self, tbf_type):
@@ -358,20 +344,20 @@ class LustreCluster(object):
         for hostname in server_hostnames:
             host = LustreHost(self, hostname, identity_file=ssh_identity_file)
             self.lc_hosts.append(host)
-        self.lc_devices = []
+        self.lc_services = {}
 
-    def lc_detect_devices(self):
+    def lc_detect_services(self):
         """
-        Detect the devices in this Lustre cluster
+        Detect the services in this Lustre cluster
         """
-        devices = []
+        services = {}
         for host in self.lc_hosts:
-            ret = host.lh_detect_devices(devices)
+            ret = host.lh_detect_services(services)
             if ret:
-                logging.error("failed to detect devices on host [%s]",
+                logging.error("failed to detect services on host [%s]",
                               host.sh_hostname)
                 return ret
-        self.lc_devices = devices
+        self.lc_services = services
         return 0
 
     def lc_check_cpt_for_oss(self):
@@ -379,17 +365,18 @@ class LustreCluster(object):
         Check whether the cpu_npartitions module param of libcfs is 1
         """
         hosts = []
-        for device in self.lc_devices:
-            if device.ld_service_type != "OST":
+        for service_name, service in self.lc_services.iteritems():
+            if service.ls_service_type != "OST":
                 continue
-            if device.ld_host.sh_hostname in hosts:
+            if service.ls_host.sh_hostname in hosts:
                 continue
-            ret = device.ld_host.lh_check_cpt()
+            logging.debug("itering on service [%s]", service_name)
+            ret = service.ls_host.lh_check_cpt()
             if ret:
                 logging.error("failed to check CPT on host [%s]",
-                              device.ld_host.sh_hostname)
+                              service.ls_host.sh_hostname)
                 return ret
-            hosts.append(device.ld_host.sh_hostname)
+            hosts.append(service.ls_host.sh_hostname)
         return 0
 
     def lc_enable_fake_io_for_oss(self):
@@ -397,17 +384,18 @@ class LustreCluster(object):
         Enable fake IO on OSS
         """
         hosts = []
-        for device in self.lc_devices:
-            if device.ld_service_type != "OST":
+        for service_name, service in self.lc_services.iteritems():
+            if service.ls_service_type != "OST":
                 continue
-            if device.ld_host.sh_hostname in hosts:
+            if service.ls_host.sh_hostname in hosts:
                 continue
-            ret = device.ld_host.lh_enable_fake_io()
+            logging.debug("itering on service [%s]", service_name)
+            ret = service.ls_host.lh_enable_fake_io()
             if ret:
                 logging.error("failed to enable fake IO on host [%s]",
-                              device.ld_host.sh_hostname)
+                              service.ls_host.sh_hostname)
                 return ret
-            hosts.append(device.ld_host.sh_hostname)
+            hosts.append(service.ls_host.sh_hostname)
         return 0
 
     def lc_enable_tbf_for_ost_io(self, tbf_type):
@@ -415,17 +403,18 @@ class LustreCluster(object):
         Change the OST IO NRS policy to TBF
         """
         hosts = []
-        for device in self.lc_devices:
-            if device.ld_service_type != "OST":
+        for service_name, service in self.lc_services.iteritems():
+            if service.ls_service_type != "OST":
                 continue
-            if device.ld_host.sh_hostname in hosts:
+            if service.ls_host.sh_hostname in hosts:
                 continue
-            ret = device.ld_host.lh_enable_tbf_for_ost_io(tbf_type)
+            logging.debug("itering on service [%s]", service_name)
+            ret = service.ls_host.lh_enable_tbf_for_ost_io(tbf_type)
             if ret:
                 logging.error("failed to enable TBF for ost_io on host [%s]",
-                              device.ld_host.sh_hostname)
+                              service.ls_host.sh_hostname)
                 return ret
-            hosts.append(device.ld_host.sh_hostname)
+            hosts.append(service.ls_host.sh_hostname)
         return 0
 
     def lc_set_jobid_var(self, jobid_var):
@@ -433,13 +422,14 @@ class LustreCluster(object):
         Change the Job ID variable on this cluster
         """
         done = False
-        for device in self.lc_devices:
-            if device.ld_service_type != "MGS":
+        for service_name, service in self.lc_services.iteritems():
+            if service.ls_service_type != "MGS":
                 continue
-            ret = device.ld_host.lh_set_jobid_var(jobid_var)
+            logging.debug("itering on service [%s]", service_name)
+            ret = service.ls_host.lh_set_jobid_var(jobid_var)
             if ret:
                 logging.error("failed to set jobid_var on host [%s]",
-                              device.ld_host.sh_hostname)
+                              service.ls_host.sh_hostname)
                 return ret
             done = True
         if not done:
@@ -453,17 +443,18 @@ class LustreCluster(object):
         Change the OST IO NRS policy to FIFO
         """
         hosts = []
-        for device in self.lc_devices:
-            if device.ld_service_type != "OST":
+        for service_name, service in self.lc_services.iteritems():
+            if service.ls_service_type != "OST":
                 continue
-            if device.ld_host.sh_hostname in hosts:
+            if service.ls_host.sh_hostname in hosts:
                 continue
-            ret = device.ld_host.lh_enable_fifo_for_ost_io()
+            logging.debug("itering on service [%s]", service_name)
+            ret = service.ls_host.lh_enable_fifo_for_ost_io()
             if ret:
                 logging.error("failed to disable TBF on host [%s]",
-                              device.ld_host.sh_hostname)
+                              service.ls_host.sh_hostname)
                 return ret
-            hosts.append(device.ld_host.sh_hostname)
+            hosts.append(service.ls_host.sh_hostname)
         return 0
 
     def lc_start_tbf_rule(self, name, expression, rate):
@@ -471,17 +462,18 @@ class LustreCluster(object):
         Start a TBF rule
         """
         hosts = []
-        for device in self.lc_devices:
-            if device.ld_service_type != "OST":
+        for service_name, service in self.lc_services.iteritems():
+            if service.ls_service_type != "OST":
                 continue
-            if device.ld_host.sh_hostname in hosts:
+            if service.ls_host.sh_hostname in hosts:
                 continue
-            ret = device.ld_host.lh_start_tbf_rule(name, expression, rate)
+            logging.debug("itering on service [%s]", service_name)
+            ret = service.ls_host.lh_start_tbf_rule(name, expression, rate)
             if ret:
                 logging.error("failed to start TBF rule [%s] on host [%s]",
-                              name, device.ld_host.sh_hostname)
+                              name, service.ls_host.sh_hostname)
                 return ret
-            hosts.append(device.ld_host.sh_hostname)
+            hosts.append(service.ls_host.sh_hostname)
         return 0
 
     def lc_change_tbf_rate(self, name, rate):
@@ -489,17 +481,18 @@ class LustreCluster(object):
         Change rate of a TBF rule
         """
         hosts = []
-        for device in self.lc_devices:
-            if device.ld_service_type != "OST":
+        for service_name, service in self.lc_services.iteritems():
+            if service.ls_service_type != "OST":
                 continue
-            if device.ld_host.sh_hostname in hosts:
+            if service.ls_host.sh_hostname in hosts:
                 continue
-            ret = device.ld_host.lh_change_tbf_rate(name, rate)
+            logging.debug("itering on service [%s]", service_name)
+            ret = service.ls_host.lh_change_tbf_rate(name, rate)
             if ret:
                 logging.error("failed to start TBF rule [%s] on host [%s]",
-                              name, device.ld_host.sh_hostname)
+                              name, service.ls_host.sh_hostname)
                 return ret
-            hosts.append(device.ld_host.sh_hostname)
+            hosts.append(service.ls_host.sh_hostname)
         return 0
 
     def lc_restart_collectd(self):
@@ -507,15 +500,16 @@ class LustreCluster(object):
         Restart collectd
         """
         hosts = []
-        for device in self.lc_devices:
-            if device.ld_host.sh_hostname in hosts:
+        for service_name, service in self.lc_services.iteritems():
+            if service.ls_host.sh_hostname in hosts:
                 continue
-            ret = device.ld_host.lh_restart_collectd()
+            logging.debug("itering on service [%s]", service_name)
+            ret = service.ls_host.lh_restart_collectd()
             if ret:
                 logging.error("failed to restart collectd on host [%s]",
-                              device.ld_host.sh_hostname)
+                              service.ls_host.sh_hostname)
                 return ret
-            hosts.append(device.ld_host.sh_hostname)
+            hosts.append(service.ls_host.sh_hostname)
         return 0
 
 
@@ -524,7 +518,7 @@ def test_tbf():
     Check whether TBF works well
     """
     cluster = LustreCluster("lustre", ["10.0.0.24"])
-    cluster.lc_detect_devices()
+    cluster.lc_detect_services()
     cluster.lc_enable_tbf_for_ost_io("nid")
     cluster.lc_set_jobid_var("procname_uid")
 

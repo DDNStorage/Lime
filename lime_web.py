@@ -100,9 +100,16 @@ class WatchedJobs(object):
         while True:
             logging.debug("sending datapoints of jobs")
             self.wjs_condition.acquire()
+            deleted_jobs = []
             for job_id, job in self.wjs_jobs.iteritems():
                 logging.error("sending datapoint of job [%s]", job_id)
-                job.wj_datapoint_send()
+                ret = job.wj_datapoint_send()
+                if ret == 1:
+                    deleted_jobs.append(job_id)
+
+            for job_id in deleted_jobs:
+                del self.wj_jobs.wjs_jobs[job_id]
+
             self.wjs_condition.release()
             logging.debug("sent datapoints of jobs")
             time.sleep(METRIC_INTERVAL)
@@ -112,6 +119,7 @@ class WatchedJob(object):
     """
     Each wathed job has an object of WatchedJob
     """
+    # pylint: disable=too-many-instance-attributes
     def __init__(self, job_id, jobs):
         self.wj_websockets = []
         self.wj_job_id = job_id
@@ -120,6 +128,7 @@ class WatchedJob(object):
         self.wj_timestamp = None
         self.wj_services = {}
         self.wj_rate_limit = None
+        self.wj_hosts = {}
 
     def wj_datapoint_add(self, service_id, timestamp, value):
         """
@@ -127,6 +136,7 @@ class WatchedJob(object):
         """
         if service_id not in self.wj_services:
             service = JobPerService()
+            logging.error("service_id: %s", service_id)
             self.wj_services[service_id] = service
         else:
             service = self.wj_services[service_id]
@@ -144,7 +154,6 @@ class WatchedJob(object):
             "rate": rate,
             "job_id": self.wj_job_id})
         for websocket in self.wj_websockets:
-            logging.debug("sending: %s", json_string)
             try:
                 websocket.send(json_string)
             except WebSocketError:
@@ -154,7 +163,8 @@ class WatchedJob(object):
         for websocket in dead_websockets:
             self.wj_websockets.remove(websocket)
         if len(self.wj_websockets) == 0:
-            del self.wj_jobs.wjs_jobs[self.wj_job_id]
+            return 1
+        return 0
 
     def wj_get_rate(self):
         """
@@ -303,10 +313,10 @@ def app_console_websocket():
 
 
 def load_config():
+    # pylint: disable=global-statement,too-many-return-statements
     """
     Load configuration file and do some initialization
     """
-    # pylint: disable=global-statement
     global CLUSTER
     json_data = open('static/lime_config.json')
     config = json.load(json_data)
@@ -325,7 +335,7 @@ def load_config():
     if ret:
         return -1
 
-    ret = CLUSTER.lc_detect_devices()
+    ret = CLUSTER.lc_detect_services()
     if ret:
         return -1
 
