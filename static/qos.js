@@ -21,6 +21,7 @@ var QOS = {
     ID_CONSOLE_CONTAINER: "#console_container",
     NAME_CONSOLE: "console",
     ID_CONSOLE: "#console",
+    DEFAULT_RATE_LIMIT: 10000,
 };
 
 function Job(job_id, panel_chart, panel_option, time_chart, time_option,
@@ -109,8 +110,8 @@ QoS.prototype.qos_job_panel_init = function(id_job, index)
             {
                 name: 'Write Performance',
                 min: 0,
-                max: 120,
-                splitNumber: 12,
+//                max: 120,
+//                splitNumber: 12,
                 type: 'gauge',
                 detail: {formatter:'{value}'},
                 data: [{value: 0, name: 'MB/s'}],
@@ -174,7 +175,7 @@ QoS.prototype.qos_job_init = function(job_id, index)
     var string = '<div id="' + name_job + '"></div>';
     $(string).appendTo("#content");
 
-    string = '<label>' + job_id + '</label><input id="' + name_rate + '" name="value" value="1000">';
+    string = '<label>' + job_id + '</label><input id="' + name_rate + '" name="value" value="' + QOS.DEFAULT_RATE_LIMIT + '">';
     $(string).appendTo(id_job);
 
     $(id_rate).spinner({

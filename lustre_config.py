@@ -209,6 +209,24 @@ class LustreHost(ssh_host.SSHHost):
             return -1
         return 0
 
+    def lh_stop_tbf_rule(self, name, expression, rate):
+        """
+        Start an TBF rule
+        """
+        command = ("echo -n stop %s > "
+                   "/proc/fs/lustre/ost/OSS/ost_io/nrs_tbf_rule" %
+                   (name))
+        retval = self.sh_run(command)
+        if retval.cr_exit_status != 0:
+            logging.error("failed to run command [%s] on host [%s], "
+                          "ret = [%d], stdout = [%s], stderr = [%s]",
+                          command, self.sh_hostname,
+                          retval.cr_exit_status,
+                          retval.cr_stdout,
+                          retval.cr_stderr)
+            return -1
+        return 0
+
     def lh_change_tbf_rate(self, name, rate):
         """
         Change the TBF rate of a rule
@@ -478,6 +496,25 @@ class LustreCluster(object):
             ret = service.ls_host.lh_start_tbf_rule(name, expression, rate)
             if ret:
                 logging.error("failed to start TBF rule [%s] on host [%s]",
+                              name, service.ls_host.sh_hostname)
+                return ret
+            hosts.append(service.ls_host.sh_hostname)
+        return 0
+
+    def lc_stop_tbf_rule(self, name):
+        """
+        Start a TBF rule
+        """
+        hosts = []
+        for service_name, service in self.lc_services.iteritems():
+            if service.ls_service_type != "OST":
+                continue
+            if service.ls_host.sh_hostname in hosts:
+                continue
+            logging.debug("itering on service [%s]", service_name)
+            ret = service.ls_host.lh_stop_tbf_rule(name, expression, rate)
+            if ret:
+                logging.error("failed to stop TBF rule [%s] on host [%s]",
                               name, service.ls_host.sh_hostname)
                 return ret
             hosts.append(service.ls_host.sh_hostname)

@@ -64,6 +64,8 @@ class WatchedJobs(object):
         if job is None:
             job = WatchedJob(job_id, WATCHED_JOBS)
             self.wjs_jobs[job_id] = job
+            tbf_name = lustre_config.tbf_escape_name(job_id)
+            CLUSTER.lc_start_tbf_rule(tbf_name, job_id, DEFAULT_RATE_LIMIT)
         job.wj_websockets.append(websocket)
         self.wjs_condition.release()
 
@@ -79,6 +81,8 @@ class WatchedJobs(object):
         if websocket in job.wj_websockets:
             job.wj_websockets.remove(websocket)
         if len(job.wj_websockets) == 0:
+            tbf_name = lustre_config.tbf_escape_name(job_id)
+            CLUSTER.lc_stop_tbf_rule(tbf_name)
             del self.wjs_jobs[job_id]
         self.wjs_condition.release()
         return 0
@@ -110,7 +114,8 @@ class WatchedJobs(object):
                     deleted_jobs.append(job_id)
 
             for job_id in deleted_jobs:
-                # IMPROVE: remove the limiations
+                tbf_name = lustre_config.tbf_escape_name(job_id)
+                CLUSTER.lc_stop_tbf_rule(tbf_name)
                 del self.wjs_jobs[job_id]
 
             self.wjs_condition.release()
@@ -210,6 +215,8 @@ class WatchedJob(object):
         if self.wj_current_rate_limit != self.wj_rate_limit:
             # IMPROVE: not very good algorithm
             rate_limit = self.wj_rate_limit / len(self.wj_hosts)
+            if rate_limit > DEFAULT_RATE_LIMIT:
+                rate_limit = DEFAULT_RATE_LIMIT
             for hostname in self.wj_hosts:
                 host = self.wj_hosts[hostname]
                 host.hfj_rate_limit = rate_limit
@@ -228,14 +235,16 @@ class WatchedJob(object):
             if selected is None:
                 logging.error("no selected host to decrease rate")
             diff = rate - self.wj_rate_limit
+            old = selected.hfj_rate_limit
             if diff + MIN_RATE_LIMIT > selected.hfj_rate_limit:
                 selected.hfj_rate_limit = MIN_RATE_LIMIT
             else:
                 selected.hfj_rate_limit -= diff
-            logging.error("decreasing rate of host [%s] for job [%s] to [%d]",
-                          selected.hfj_host.sh_hostname,
-                          self.wj_job_id,
-                          selected.hfj_rate_limit)
+            logging.info("decreasing rate of host [%s] for job [%s] from [%d] "
+                         "to [%d]",
+                         selected.hfj_host.sh_hostname,
+                         self.wj_job_id,
+                         old, selected.hfj_rate_limit)
             selected.hfj_host.lh_change_tbf_rate(self.wj_tbf_name,
                                                  selected.hfj_rate_limit)
 
@@ -249,12 +258,18 @@ class WatchedJob(object):
                     selected = host
             if selected is None:
                 logging.error("no selected host to increase rate")
+            if selected.hfj_rate_limit >= DEFAULT_RATE_LIMIT:
+                return
+            old = selected.hfj_rate_limit
             diff = self.wj_rate_limit - rate
             selected.hfj_rate_limit += diff
-            logging.error("increasing rate of host [%s] for job [%s] to [%d]",
-                          selected.hfj_host.sh_hostname,
-                          self.wj_job_id,
-                          selected.hfj_rate_limit)
+            if selected.hfj_rate_limit > DEFAULT_RATE_LIMIT:
+                selected.hfj_rate_limit = DEFAULT_RATE_LIMIT
+            logging.info("increasing rate of host [%s] for job [%s] from [%d] "
+                         "to [%d]",
+                         selected.hfj_host.sh_hostname,
+                         self.wj_job_id,
+                         old, selected.hfj_rate_limit)
             selected.hfj_host.lh_change_tbf_rate(self.wj_tbf_name,
                                                  selected.hfj_rate_limit)
 
@@ -371,16 +386,13 @@ def app_console_websocket():
         jobs = config["jobs"]
         for job in jobs:
             job_id = job["job_id"]
-            tbf_name = lustre_config.tbf_escape_name(job_id)
             WATCHED_JOBS.wjs_watch_job(job_id, websocket)
-            CLUSTER.lc_start_tbf_rule(tbf_name, job_id, DEFAULT_RATE_LIMIT)
 
         while not websocket.closed:
             control_command = websocket.receive()
             logging.debug("command: %s", control_command)
             control = json.loads(control_command)
             job_id = control["job_id"]
-            tbf_name = lustre_config.tbf_escape_name(job_id)
             rate = control["rate"]
             job = WATCHED_JOBS.wjs_find_job(job_id)
             if job is None:
@@ -425,11 +437,13 @@ def load_config():
     logging.debug("fsname: [%s], hosts: %s", fsname, hosts)
     CLUSTER = lustre_config.LustreCluster(fsname, hosts,
                                           ssh_identity_file=identity)
-    ret = CLUSTER.lc_restart_collectd()
+    logging.debug("detecting services")
+    ret = CLUSTER.lc_detect_services()
     if ret:
         return -1
 
-    ret = CLUSTER.lc_detect_services()
+    logging.debug("restarting collectd")
+    ret = CLUSTER.lc_restart_collectd()
     if ret:
         return -1
 
