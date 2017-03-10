@@ -92,6 +92,7 @@ class LustreHost(ssh_host.SSHHost):
                 logging.debug("service [%s] running on host [%s]",
                               service_name, self.sh_hostname)
                 if service_name in cluster_services:
+                    service = cluster_services[service_name]
                     logging.error("two hosts [%s] and [%s] for service [%s]",
                                   service.ls_host.sh_hostname,
                                   self.sh_hostname, service_name)
@@ -209,7 +210,7 @@ class LustreHost(ssh_host.SSHHost):
             return -1
         return 0
 
-    def lh_stop_tbf_rule(self, name, expression, rate):
+    def lh_stop_tbf_rule(self, name):
         """
         Start an TBF rule
         """
@@ -327,6 +328,22 @@ class LustreHost(ssh_host.SSHHost):
             return -1
         return 0
 
+    def lh_clear_loc(self):
+        """
+        Clearn LOC
+        """
+        command = ("lctl set_param fail_loc=0")
+        retval = self.sh_run(command)
+        if retval.cr_exit_status != 0:
+            logging.error("failed to run command [%s] on host [%s], "
+                          "ret = [%d], stdout = [%s], stderr = [%s]",
+                          command, self.sh_hostname,
+                          retval.cr_exit_status,
+                          retval.cr_stdout,
+                          retval.cr_stderr)
+            return -1
+        return 0
+
     def lh_restart_collectd(self):
         """
         Restart collectd
@@ -423,6 +440,26 @@ class LustreCluster(object):
             hosts.append(service.ls_host.sh_hostname)
         return 0
 
+
+    def lc_clear_loc_for_oss(self):
+        """
+        Clear LOC, thus fake IO on OSS will be disabled
+        """
+        hosts = []
+        for service_name, service in self.lc_services.iteritems():
+            if service.ls_service_type != "OST":
+                continue
+            if service.ls_host.sh_hostname in hosts:
+                continue
+            logging.debug("itering on service [%s]", service_name)
+            ret = service.ls_host.lh_clear_loc()
+            if ret:
+                logging.error("failed to clear LOC on host [%s]",
+                              service.ls_host.sh_hostname)
+                return ret
+            hosts.append(service.ls_host.sh_hostname)
+        return 0
+
     def lc_enable_tbf_for_ost_io(self, tbf_type):
         """
         Change the OST IO NRS policy to TBF
@@ -512,7 +549,7 @@ class LustreCluster(object):
             if service.ls_host.sh_hostname in hosts:
                 continue
             logging.debug("itering on service [%s]", service_name)
-            ret = service.ls_host.lh_stop_tbf_rule(name, expression, rate)
+            ret = service.ls_host.lh_stop_tbf_rule(name)
             if ret:
                 logging.error("failed to stop TBF rule [%s] on host [%s]",
                               name, service.ls_host.sh_hostname)

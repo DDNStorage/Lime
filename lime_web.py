@@ -28,6 +28,270 @@ DEFAULT_RATE_LIMIT = 10000
 MIN_RATE_LIMIT = 10
 
 
+class RatePolicy(object):
+    # pylint: disable=too-few-public-methods
+    """
+    One kind of policy to tune the rate
+    """
+    def __init__(self, name, comment, tune_func):
+        self.rp_name = name
+        self.rp_comment = comment
+        self.rp_tune_func = tune_func
+
+
+class IndependentRatePolicy(RatePolicy):
+    """
+    The policy of tuning rates of jobs regardless of other jobs
+    """
+    def __init__(self):
+        comment = ("The policy of tuning rates of jobs regardless of other "
+                   "jobs. This policy is suitable for following sitations: "
+                   "1) cluster only has one job;\n"
+                   "2) cluster has enough bandwiths for all jobs;\n"
+                   "3) jobs are doing fake I/O and also network bandwidth is "
+                   "not performance bottleneck.")
+        super(IndependentRatePolicy, self).__init__("exclusive", comment,
+                                                    self.irp_tune)
+
+    def irp_job_tune(self, job):
+        # pylint: disable=too-many-branches,no-self-use
+        """
+        Tune the setting according to rate
+        """
+        rate = job.wj_rate
+        if job.wj_rate_limit is None:
+            for hostname in job.wj_hosts:
+                host = job.wj_hosts[hostname]
+                if host.hfj_rate_limit < DEFAULT_RATE_LIMIT:
+                    host.hfj_rate_limit = DEFAULT_RATE_LIMIT
+                    host.hfj_host.lh_change_tbf_rate(job.wj_tbf_name,
+                                                     DEFAULT_RATE_LIMIT)
+            return
+        if job.wj_current_rate_limit != job.wj_rate_limit:
+            # IMPROVE: not perfect algorithm, need to set on active hosts,
+            # rather than all hosts.
+            if len(job.wj_hosts) == 0:
+                return
+            rate_limit = job.wj_rate_limit / len(job.wj_hosts)
+            if rate_limit > DEFAULT_RATE_LIMIT:
+                rate_limit = DEFAULT_RATE_LIMIT
+            for hostname in job.wj_hosts:
+                host = job.wj_hosts[hostname]
+                host.hfj_rate_limit = rate_limit
+                host.hfj_host.lh_change_tbf_rate(job.wj_tbf_name,
+                                                 rate_limit)
+            job.wj_current_rate_limit = job.wj_rate_limit
+            return
+
+        if rate > job.wj_rate_limit * 11 / 10:
+            job.wj_decrease_highest_host(job.wj_rate - job.wj_rate_limit)
+            return
+
+        if rate < job.wj_rate_limit * 9 / 10:
+            job.wj_increase_lowest_host()
+
+    def irp_tune(self, qos_task):
+        """
+        Tune the jobs
+        """
+        for job_id in qos_task.wjs_jobs:
+            job = qos_task.wjs_jobs[job_id]
+            self.irp_job_tune(job)
+
+
+class ActionHistory(object):
+    """
+    Action history
+    """
+    # pylint: disable=too-few-public-methods
+    RESULT_RISE = "rise"
+    RESULT_DECLINE = "decline"
+    RESULT_UNKNOWN = "unknown"
+    RESULT_UNCHANGED = "unchanged"
+    ACTION_INCREASE_MYSELF = "increase myself"
+    ACTION_DECREASE_MYSELF = "decrease myself"
+    ACTION_DECREASE_OTHERS = "decrease others"
+
+    def __init__(self, job_id, rate_before, action_type, expected_result):
+        self.ah_job_id = job_id
+        self.ah_rate_before = rate_before
+        self.ah_rate_after = None
+        self.ah_action_type = action_type
+        self.ah_result = ActionHistory.RESULT_UNKNOWN
+        self.ah_expected_result = expected_result
+        self.ah_failure_time = 0
+
+
+class PriorityRatePolicy(RatePolicy):
+    """
+    The policy that tries to satisfy the requests of jobs with highest priority
+    first
+    """
+    # pylint: disable=too-few-public-methods
+    def __init__(self):
+        comment = ("The policy that tries to satisfy the limits of jobs "
+                   "with highest priority first. If the job with highest "
+                   "priority doesn't "
+                   "get enough rate, try two options:\n"
+                   "1) Increase rate limitation of itself\n"
+                   "2) Decrease rate limitation of others\n"
+                   "Option 1) will be tried first, and if it fails, option 2)"
+                   "will be tried.")
+        super(PriorityRatePolicy, self).__init__("priority", comment,
+                                                 self.prp_tune)
+        self.prp_last_action = None
+        self.prp_job_id = None
+        self.prp_max_failures = 4
+
+    def prp_job_tune(self, qos_task, job):
+        # pylint: disable=too-many-branches,no-self-use,too-many-statements
+        # pylint: disable=too-many-locals,too-many-return-statements
+        """
+        Only tune a job for once, so return 1 if changed something
+        """
+        job_id = job.wj_job_id
+        logging.error("tuning job [%s]", job_id)
+        action = self.prp_last_action
+        if action is None:
+            pass
+        elif action.ah_job_id != job_id:
+            pass
+        else:
+            action.ah_rate_after = job.wj_rate
+            if job.wj_rate > action.ah_rate_before + MIN_RATE_LIMIT:
+                action.ah_result = ActionHistory.RESULT_RISE
+            elif action.ah_rate_before > job.wj_rate + MIN_RATE_LIMIT:
+                action.ah_result = ActionHistory.RESULT_DECLINE
+            else:
+                action.ah_result = ActionHistory.RESULT_UNCHANGED
+            if action.ah_result == action.ah_expected_result:
+                action.ah_failure_time = 0
+            else:
+                action.ah_failure_time += 1
+
+        rate = job.wj_rate
+        if job.wj_rate_limit is None:
+            changed = False
+            job.wj_current_rate_limit = None
+            for hostname in job.wj_hosts:
+                host = job.wj_hosts[hostname]
+                if host.hfj_rate_limit < DEFAULT_RATE_LIMIT:
+                    host.hfj_rate_limit = DEFAULT_RATE_LIMIT
+                    host.hfj_host.lh_change_tbf_rate(job.wj_tbf_name,
+                                                     DEFAULT_RATE_LIMIT)
+                    changed = True
+            if changed:
+                self.prp_last_action = None
+                logging.error("clear limitation of job [%s]", job_id)
+                return 1
+
+        if job.wj_current_rate_limit != job.wj_rate_limit:
+            # IMPROVE: not perfect algorithm, need to set on active hosts,
+            # rather than all hosts.
+            job.wj_current_rate_limit = job.wj_rate_limit
+            self.prp_last_action = None
+            logging.error("updating limitation of job [%s]", job_id)
+            if len(job.wj_hosts) == 0:
+                return 0
+            rate_limit = job.wj_rate_limit / len(job.wj_hosts)
+            if rate_limit > DEFAULT_RATE_LIMIT:
+                rate_limit = DEFAULT_RATE_LIMIT
+            for hostname in job.wj_hosts:
+                host = job.wj_hosts[hostname]
+                host.hfj_rate_limit = rate_limit
+                host.hfj_host.lh_change_tbf_rate(job.wj_tbf_name,
+                                                 rate_limit)
+            return 1
+
+        failure_time = 0
+        if (action is not None and
+                action.ah_job_id == job_id):
+            # Do not try endlessly
+            if action.ah_failure_time > self.prp_max_failures:
+                self.prp_last_action = None
+                logging.error("too many failures of job [%s], no more trying",
+                              job_id)
+                return 0
+            failure_time = action.ah_failure_time
+
+        if (job.wj_rate_limit is not None and
+                rate > job.wj_rate_limit * 11 / 10):
+            action = ActionHistory(job_id, rate,
+                                   ActionHistory.ACTION_DECREASE_MYSELF,
+                                   ActionHistory.RESULT_DECLINE)
+            action.ah_failure_time = failure_time
+            self.prp_last_action = action
+            job.wj_decrease_highest_host(job.wj_rate - job.wj_rate_limit)
+            logging.error("trying to decrease rate of job [%s]",
+                          job_id)
+            return 1
+
+        if job.wj_rate_limit is None or rate < job.wj_rate_limit * 9 / 10:
+            if action is None:
+                increase = True
+            elif action.ah_job_id != job_id:
+                increase = True
+            elif action.ah_action_type == ActionHistory.ACTION_INCREASE_MYSELF:
+                if action.ah_result == ActionHistory.RESULT_RISE:
+                    increase = True
+                else:
+                    increase = False
+            else:
+                if action.ah_result == ActionHistory.RESULT_RISE:
+                    increase = False
+                else:
+                    increase = True
+
+            if increase:
+                action = ActionHistory(job_id, rate,
+                                       ActionHistory.ACTION_INCREASE_MYSELF,
+                                       ActionHistory.RESULT_RISE)
+                job.wj_increase_lowest_host()
+            else:
+                selected = None
+                higher_priority = True
+                for tmp_job_id in qos_task.wjs_jobs:
+                    tmp_job = qos_task.wjs_jobs[tmp_job_id]
+                    if tmp_job_id == job_id:
+                        higher_priority = False
+                        continue
+                    if higher_priority:
+                        continue
+                    if selected is None or selected.wj_rate <= tmp_job.wj_rate:
+                        selected = tmp_job
+                # Decrease the rate to half to provide extra rate for job with
+                # higher priority
+                selected.wj_decrease_highest_host(selected.wj_rate / 2)
+                if selected is None:
+                    logging.error("no job to decrease rate in order to "
+                                  "increase rate of job [%s]", job_id)
+                    self.prp_last_action = None
+                    return 0
+                action = ActionHistory(job_id, rate,
+                                       ActionHistory.ACTION_DECREASE_OTHERS,
+                                       ActionHistory.RESULT_RISE)
+            self.prp_last_action = action
+            action.ah_failure_time = failure_time
+            self.prp_last_action = action
+            logging.error("trying to increase rate of job [%s]",
+                          job_id)
+            return 1
+
+        logging.error("doing nothing for job [%s]", job_id)
+        self.prp_last_action = None
+        return 0
+
+    def prp_tune(self, qos_task):
+        """
+        Tune the jobs
+        """
+        for job_id in qos_task.wjs_jobs:
+            job = qos_task.wjs_jobs[job_id]
+            ret = self.prp_job_tune(qos_task, job)
+            if ret:
+                break
+
+
 class WatchedJobs(object):
     """
     All the watched Jobs will be group here
@@ -35,6 +299,12 @@ class WatchedJobs(object):
     def __init__(self):
         self.wjs_jobs = {}
         self.wjs_condition = threading.Condition()
+
+        self.wjs_rate_policies = []
+        self.wjs_independent_rate_policy = IndependentRatePolicy()
+        self.wjs_rate_policies.append(self.wjs_independent_rate_policy)
+        self.wjs_priority_policy = PriorityRatePolicy()
+        self.wjs_rate_policies.append(self.wjs_priority_policy)
         utils.thread_start(self.wjs_datapoints_send, ())
 
     def _wjs_find_job(self, job_id):
@@ -118,6 +388,8 @@ class WatchedJobs(object):
                 CLUSTER.lc_stop_tbf_rule(tbf_name)
                 del self.wjs_jobs[job_id]
 
+            self.wjs_independent_rate_policy.rp_tune_func(self)
+            # self.wjs_priority_policy.rp_tune_func(self)
             self.wjs_condition.release()
             logging.debug("sent datapoints of jobs")
             sleep(METRIC_INTERVAL)
@@ -132,8 +404,8 @@ class HostForJob(object):
         self.hfj_host = host
         # Array of services for job
         self.hfj_services = {}
-        self.hfj_rate_limit = None
-        self.lfj_rate = 0
+        self.hfj_rate_limit = DEFAULT_RATE_LIMIT
+        self.hfj_rate = 0
 
 
 class WatchedJob(object):
@@ -150,6 +422,7 @@ class WatchedJob(object):
         self.wj_services = {}
         self.wj_rate_limit = None
         self.wj_current_rate_limit = None
+        self.wj_rate = None
         # Host for each job
         self.wj_hosts = {}
         self.wj_tbf_name = lustre_config.tbf_escape_name(job_id)
@@ -199,80 +472,6 @@ class WatchedJob(object):
             return 1
         return 0
 
-    def wj_rate_tune(self, rate):
-        # pylint: disable=too-many-branches
-        """
-        Tune the setting according to rate
-        """
-        if self.wj_rate_limit is None:
-            for hostname in self.wj_hosts:
-                host = self.wj_hosts[hostname]
-                if host.hfj_rate_limit is not None:
-                    host.hfj_rate_limit = None
-                    host.hfj_host.lh_change_tbf_rate(self.wj_tbf_name,
-                                                     DEFAULT_RATE_LIMIT)
-            return
-        if self.wj_current_rate_limit != self.wj_rate_limit:
-            # IMPROVE: not very good algorithm
-            rate_limit = self.wj_rate_limit / len(self.wj_hosts)
-            if rate_limit > DEFAULT_RATE_LIMIT:
-                rate_limit = DEFAULT_RATE_LIMIT
-            for hostname in self.wj_hosts:
-                host = self.wj_hosts[hostname]
-                host.hfj_rate_limit = rate_limit
-                host.hfj_host.lh_change_tbf_rate(self.wj_tbf_name,
-                                                 rate_limit)
-            self.wj_current_rate_limit = self.wj_rate_limit
-
-        if rate > self.wj_rate_limit * 11 / 10:
-            # Decrease the limit of the host with highest rate limit
-            selected = None
-            for hostname in self.wj_hosts:
-                host = self.wj_hosts[hostname]
-                if (selected is None or
-                        selected.hfj_rate_limit < host.hfj_rate_limit):
-                    selected = host
-            if selected is None:
-                logging.error("no selected host to decrease rate")
-            diff = rate - self.wj_rate_limit
-            old = selected.hfj_rate_limit
-            if diff + MIN_RATE_LIMIT > selected.hfj_rate_limit:
-                selected.hfj_rate_limit = MIN_RATE_LIMIT
-            else:
-                selected.hfj_rate_limit -= diff
-            logging.info("decreasing rate of host [%s] for job [%s] from [%d] "
-                         "to [%d]",
-                         selected.hfj_host.sh_hostname,
-                         self.wj_job_id,
-                         old, selected.hfj_rate_limit)
-            selected.hfj_host.lh_change_tbf_rate(self.wj_tbf_name,
-                                                 selected.hfj_rate_limit)
-
-        if rate < self.wj_rate_limit * 9 / 10:
-            # Increase the limit of the host with lowest rate limit
-            selected = None
-            for hostname in self.wj_hosts:
-                host = self.wj_hosts[hostname]
-                if (selected is None or
-                        selected.hfj_rate_limit > host.hfj_rate_limit):
-                    selected = host
-            if selected is None:
-                logging.error("no selected host to increase rate")
-            if selected.hfj_rate_limit >= DEFAULT_RATE_LIMIT:
-                return
-            old = selected.hfj_rate_limit
-            diff = self.wj_rate_limit - rate
-            selected.hfj_rate_limit += diff
-            if selected.hfj_rate_limit > DEFAULT_RATE_LIMIT:
-                selected.hfj_rate_limit = DEFAULT_RATE_LIMIT
-            logging.info("increasing rate of host [%s] for job [%s] from [%d] "
-                         "to [%d]",
-                         selected.hfj_host.sh_hostname,
-                         self.wj_job_id,
-                         old, selected.hfj_rate_limit)
-            selected.hfj_host.lh_change_tbf_rate(self.wj_tbf_name,
-                                                 selected.hfj_rate_limit)
-
     def wj_rate_get(self):
         """
         Return the current rate according the datapoints
@@ -280,15 +479,76 @@ class WatchedJob(object):
         rate = 0
         for hostname in self.wj_hosts:
             host = self.wj_hosts[hostname]
-            host.lfj_rate = 0
+            host.hfj_rate = 0
             for service_id in host.hfj_services:
                 service = host.hfj_services[service_id]
                 service_rate = service.sfj_rate
                 if service_rate is not None:
                     rate += service_rate
-                    host.lfj_rate += service_rate
-        self.wj_rate_tune(rate)
+                    host.hfj_rate += service_rate
+        self.wj_rate = rate
         return rate
+
+    def wj_decrease_highest_host(self, diff):
+        """
+        Decrease the limit of the host with highest rate limit
+        """
+        selected = None
+        # IMPROVEMENT: this is not perfect way to select the host
+        # instead, should select the host with the higest rate
+        for hostname in self.wj_hosts:
+            host = self.wj_hosts[hostname]
+            if (selected is None or
+                    selected.hfj_rate_limit < host.hfj_rate_limit):
+                selected = host
+        if selected is None:
+            logging.error("no selected host to decrease rate")
+        old = selected.hfj_rate_limit
+        # The rate is lower than the limit, there is other bottleneck
+        # Set the rate limit to the real limit to speedup the decrease process
+        if old > selected.hfj_rate * 11 / 10:
+            selected.hfj_rate_limit = selected.hfj_rate
+
+        if diff + MIN_RATE_LIMIT > selected.hfj_rate_limit:
+            selected.hfj_rate_limit = MIN_RATE_LIMIT
+        else:
+            selected.hfj_rate_limit -= diff
+        logging.info("decreasing rate of host [%s] for job [%s] from [%d] "
+                     "to [%d]",
+                     selected.hfj_host.sh_hostname,
+                     self.wj_job_id,
+                     old, selected.hfj_rate_limit)
+        selected.hfj_host.lh_change_tbf_rate(self.wj_tbf_name,
+                                             selected.hfj_rate_limit)
+
+    def wj_increase_lowest_host(self):
+        """
+        Increase the limit of the host with lowest rate limit
+        """
+        selected = None
+        for hostname in self.wj_hosts:
+            host = self.wj_hosts[hostname]
+            if host.hfj_rate_limit >= DEFAULT_RATE_LIMIT:
+                continue
+            if (selected is None or
+                    selected.hfj_rate_limit > host.hfj_rate_limit):
+                selected = host
+        if selected is None:
+            logging.error("no selected host to increase rate")
+            return
+        old = selected.hfj_rate_limit
+        diff = self.wj_rate_limit - self.wj_rate
+        selected.hfj_rate_limit += diff
+        if selected.hfj_rate_limit > DEFAULT_RATE_LIMIT:
+            selected.hfj_rate_limit = DEFAULT_RATE_LIMIT
+        logging.info("increasing rate of host [%s] for job [%s] from [%d] "
+                     "to [%d]",
+                     selected.hfj_host.sh_hostname,
+                     self.wj_job_id,
+                     old, selected.hfj_rate_limit)
+        selected.hfj_host.lh_change_tbf_rate(self.wj_tbf_name,
+                                             selected.hfj_rate_limit)
+        return
 
 
 class ServiceForJob(object):
@@ -442,10 +702,17 @@ def load_config():
     if ret:
         return -1
 
-    logging.debug("restarting collectd")
     ret = CLUSTER.lc_restart_collectd()
     if ret:
         return -1
+
+    ret = CLUSTER.lc_enable_fake_io_for_oss()
+    if ret:
+        return -1
+
+    # ret = CLUSTER.lc_clear_loc_for_oss()
+    # if ret:
+    #     return -1
 
     ret = CLUSTER.lc_check_cpt_for_oss()
     if ret:
