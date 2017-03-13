@@ -4,6 +4,7 @@
 """
 Web inteface of LIME
 """
+import collections
 import json
 import os
 import threading
@@ -106,20 +107,165 @@ class ActionHistory(object):
     # pylint: disable=too-few-public-methods
     RESULT_RISE = "rise"
     RESULT_DECLINE = "decline"
-    RESULT_UNKNOWN = "unknown"
     RESULT_UNCHANGED = "unchanged"
     ACTION_INCREASE_MYSELF = "increase myself"
     ACTION_DECREASE_MYSELF = "decrease myself"
     ACTION_DECREASE_OTHERS = "decrease others"
+    STAGE_ORIGIN = "origin"
+    STAGE_ACTED = "acted"
+    STAGE_REGRETTED = "regretted"
 
-    def __init__(self, job_id, rate_before, action_type, expected_result):
+    def __init__(self, qos_task, job_id, action_type, action_job_id,
+                 action_hostname, limit_before, limit_after, expected_result):
+        self.ah_qos_task = qos_task
         self.ah_job_id = job_id
-        self.ah_rate_before = rate_before
-        self.ah_rate_after = None
+        self.ah_rates_original = qos_task.wjs_save_rates(job_id)
+        self.ah_stage = ActionHistory.STAGE_ORIGIN
+
+        self.ah_action_good = None
+        self.ah_action_job_id = action_job_id
+        self.ah_action_hostname = action_hostname
+        self.ah_action_limit_before = limit_before
+        self.ah_action_limit_after = limit_after
+
+        self.ah_rates_after_action = None
         self.ah_action_type = action_type
-        self.ah_result = ActionHistory.RESULT_UNKNOWN
-        self.ah_expected_result = expected_result
+        self.ah_action_expected_result = expected_result
+
+        self.ah_rates_after_regret = None
+        self.ah_regret_type = None
+        self.ah_regret_expected_result = None
+
         self.ah_failure_time = 0
+
+    def ah_declined_after_action(self):
+        for job_id in self.ah_rates_after_action:
+            if self.ah_job_id == job_id:
+                break
+            rate_after_action = self.ah_rates_after_action[job_id]
+            if job_id not in self.ah_rates_original:
+                continue
+            rate_original = self.ah_rates_original[job_id]
+            if rate_after_action + MIN_RATE_LIMIT / 2 < rate_original:
+                return True
+        return False
+
+    def ah_expected_action_result(self):
+        """
+        Whether the action has expected result
+        """
+        job_id = self.ah_job_id
+        if job_id not in self.ah_rates_original:
+            logging.error("can't get original rate of job [%s]", job_id)
+            return False
+        if job_id not in self.ah_rates_after_action:
+            logging.error("can't get rate of job [%s] after action", job_id)
+            return False
+        rate_original = self.ah_rates_original[job_id]
+        rate_after_action = self.ah_rates_after_action[job_id]
+        if self.ah_action_expected_result == ActionHistory.RESULT_RISE:
+            if rate_after_action < rate_original + MIN_RATE_LIMIT:
+                return False
+            else:
+                return True
+        else:
+            assert (self.ah_action_expected_result ==
+                    ActionHistory.RESULT_DECLINE)
+            if rate_after_action + MIN_RATE_LIMIT > rate_original:
+                return False
+            else:
+                return True
+        return False
+
+    def ah_declined_after_regret(self):
+        """
+        Whether the hosts with higher priority got performance decline
+        """
+        for job_id in self.ah_rates_after_regret:
+            if self.ah_job_id == job_id:
+                break
+            rate_after_regret = self.ah_rates_after_regret[job_id]
+            if job_id not in self.ah_rates_original:
+                continue
+            rate_original = self.ah_rates_original[job_id]
+            if rate_after_regret + MIN_RATE_LIMIT < rate_original:
+                return True
+        return False
+
+    def ah_regret(self):
+        assert self.ah_stage == ActionHistory.STAGE_ACTED
+        logging.error("changing rate of host [%s] for job [%s] from [%d] "
+                      "back to [%d]",
+                      self.ah_action_hostname,
+                      self.ah_action_job_id,
+                      self.ah_action_limit_after,
+                      self.ah_action_limit_before)
+        if self.ah_action_job_id not in self.ah_qos_task.wjs_jobs:
+            return -1
+        job = self.ah_qos_task.wjs_jobs[self.ah_action_job_id]
+        if self.ah_action_hostname not in job.wj_hosts:
+            return -1
+        host = job.wj_hosts[self.ah_action_hostname]
+        ret = host.hfj_change_tbf_rate(self.ah_action_limit_before)
+        if ret:
+            return ret
+        self.ah_stage = ActionHistory.STAGE_REGRETTED
+        return 0
+
+    def ah_act(self):
+        assert self.ah_stage == ActionHistory.STAGE_ORIGIN
+        if (self.ah_action_type == ActionHistory.ACTION_DECREASE_MYSELF or
+                self.ah_action_type == ActionHistory.ACTION_INCREASE_MYSELF or
+                self.ah_action_type == ActionHistory.ACTION_DECREASE_OTHERS):
+            logging.error("changing rate of host [%s] for job [%s] from [%d] "
+                          "to [%d]",
+                          self.ah_action_hostname,
+                          self.ah_action_job_id,
+                          self.ah_action_limit_before,
+                          self.ah_action_limit_after)
+            if self.ah_action_job_id not in self.ah_qos_task.wjs_jobs:
+                return -1
+            job = self.ah_qos_task.wjs_jobs[self.ah_action_job_id]
+            if self.ah_action_hostname not in job.wj_hosts:
+                return -1
+            host = job.wj_hosts[self.ah_action_hostname]
+            ret = host.hfj_change_tbf_rate(self.ah_action_limit_after)
+            if ret:
+                return ret
+        else:
+            assert 0
+        self.ah_stage = ActionHistory.STAGE_ACTED
+        return 0
+
+    def ah_process(self, qos_task):
+        """
+        Return True if action processed, return false if the action ended
+        """
+        job_id = self.ah_job_id
+        logging.error("processing action with stage [%s]", self.ah_stage)
+        if self.ah_stage == ActionHistory.STAGE_ACTED:
+            self.ah_rates_after_action = qos_task.wjs_save_rates(job_id)
+            if self.ah_declined_after_action():
+                self.ah_failure_time += 1
+                self.ah_regret()
+                self.ah_action_good = False
+                return True
+            elif not self.ah_expected_action_result():
+                self.ah_failure_time += 1
+                self.ah_action_good = False
+            else:
+                self.ah_action_good = True
+        else:
+            assert (self.ah_stage ==
+                    ActionHistory.STAGE_REGRETTED)
+            self.ah_rates_after_regret = qos_task.wjs_save_rates(job_id)
+            if self.ah_declined_after_regret():
+                logging.error("action caused declining and regetting "
+                              "didn't recover it")
+            else:
+                logging.error("action caused declining and regetting "
+                              "recovered it")
+        return False
 
 
 class PriorityRatePolicy(RatePolicy):
@@ -140,59 +286,22 @@ class PriorityRatePolicy(RatePolicy):
         super(PriorityRatePolicy, self).__init__("priority", comment,
                                                  self.prp_tune)
         self.prp_last_action = None
-        self.prp_job_id = None
-        self.prp_max_failures = 4
+        self.prp_max_failures = 3
+        # Interval of changing rate
+        self.prp_interval = 2
+        self.prp_count = 0
 
-    def prp_job_tune(self, qos_task, job):
-        # pylint: disable=too-many-branches,no-self-use,too-many-statements
-        # pylint: disable=too-many-locals,too-many-return-statements
-        """
-        Only tune a job for once, so return 1 if changed something
-        """
-        job_id = job.wj_job_id
-        logging.error("tuning job [%s]", job_id)
-        action = self.prp_last_action
-        if action is None:
-            pass
-        elif action.ah_job_id != job_id:
-            pass
-        else:
-            action.ah_rate_after = job.wj_rate
-            if job.wj_rate > action.ah_rate_before + MIN_RATE_LIMIT:
-                action.ah_result = ActionHistory.RESULT_RISE
-            elif action.ah_rate_before > job.wj_rate + MIN_RATE_LIMIT:
-                action.ah_result = ActionHistory.RESULT_DECLINE
-            else:
-                action.ah_result = ActionHistory.RESULT_UNCHANGED
-            if action.ah_result == action.ah_expected_result:
-                action.ah_failure_time = 0
-            else:
-                action.ah_failure_time += 1
-
-        rate = job.wj_rate
-        if job.wj_rate_limit is None:
-            changed = False
-            job.wj_current_rate_limit = None
-            for hostname in job.wj_hosts:
-                host = job.wj_hosts[hostname]
-                if host.hfj_rate_limit < DEFAULT_RATE_LIMIT:
-                    host.hfj_rate_limit = DEFAULT_RATE_LIMIT
-                    host.hfj_host.lh_change_tbf_rate(job.wj_tbf_name,
-                                                     DEFAULT_RATE_LIMIT)
-                    changed = True
-            if changed:
-                self.prp_last_action = None
-                logging.error("clear limitation of job [%s]", job_id)
-                return 1
-
-        if job.wj_current_rate_limit != job.wj_rate_limit:
+    def prp_rate_limit_update(self, qos_task):
+        changed = False
+        for job_id in qos_task.wjs_jobs:
+            job = qos_task.wjs_jobs[job_id]
+            if job.wj_current_rate_limit == job.wj_rate_limit:
+                continue
+            job.wj_current_rate_limit = job.wj_rate_limit
+            if len(job.wj_hosts) == 0:
+                continue
             # IMPROVE: not perfect algorithm, need to set on active hosts,
             # rather than all hosts.
-            job.wj_current_rate_limit = job.wj_rate_limit
-            self.prp_last_action = None
-            logging.error("updating limitation of job [%s]", job_id)
-            if len(job.wj_hosts) == 0:
-                return 0
             rate_limit = job.wj_rate_limit / len(job.wj_hosts)
             if rate_limit > DEFAULT_RATE_LIMIT:
                 rate_limit = DEFAULT_RATE_LIMIT
@@ -201,95 +310,225 @@ class PriorityRatePolicy(RatePolicy):
                 host.hfj_rate_limit = rate_limit
                 host.hfj_host.lh_change_tbf_rate(job.wj_tbf_name,
                                                  rate_limit)
-            return 1
+                changed = True
+                logging.error("updated rate limit of job [%s] on host [%s] "
+                              "from GUI", job_id, hostname)
+        return changed
 
-        failure_time = 0
-        if (action is not None and
-                action.ah_job_id == job_id):
-            # Do not try endlessly
-            if action.ah_failure_time > self.prp_max_failures:
-                self.prp_last_action = None
-                logging.error("too many failures of job [%s], no more trying",
-                              job_id)
-                return 0
-            failure_time = action.ah_failure_time
+    def prp_increase_self(self, qos_task, job, job_id, failure_time):
+        hosts = job.wj_hosts_sort_by_rate()
+        selected = None
+        for host in hosts:
+            diff = MIN_RATE_LIMIT * 2
+            limit_after = host.hfj_rate_limit + diff
+            if limit_after > DEFAULT_RATE_LIMIT:
+                limit_after = DEFAULT_RATE_LIMIT
+            if limit_after == host.hfj_rate_limit:
+                logging.error("not able to start an increase action for job "
+                              "[%s] on host [%s] because the action would "
+                              "change nothing", job_id,
+                              host.hfj_host.sh_hostname)
+                continue
+            selected = host
+            break
+        if selected is None:
+            return -1
+        new_act = ActionHistory(qos_task, job_id,
+                                ActionHistory.ACTION_INCREASE_MYSELF,
+                                job_id, selected.hfj_host.sh_hostname,
+                                selected.hfj_rate_limit, limit_after,
+                                ActionHistory.RESULT_RISE)
+        logging.error("trying to increase rate of job [%s] by "
+                      "increasing its limitation",
+                      job_id)
+        new_act.ah_failure_time = failure_time
+        ret = new_act.ah_act()
+        if ret:
+            return ret
+        self.prp_last_action = new_act
+        return 0
 
+    def prp_decrease_others(self, qos_task, job, job_id, failure_time):
+        logging.error("trying to increase rate of job [%s] by "
+                      "decreasing rates of other jobs", job_id)
+        host = None
+        for hostname in job.wj_hosts:
+            higher_priority = True
+            for tmp_job_id in qos_task.wjs_jobs:
+                tmp_job = qos_task.wjs_jobs[tmp_job_id]
+                if tmp_job_id == job_id:
+                    higher_priority = False
+                    continue
+                if higher_priority:
+                    continue
+                if tmp_job.wj_rate == 0:
+                    continue
+                if hostname not in tmp_job.wj_hosts:
+                    continue
+                tmp_host = tmp_job.wj_hosts[hostname]
+                if host is None or host.hfj_rate < tmp_host.hfj_rate:
+                    host = tmp_host
+        if host is None:
+            logging.error("no job to decrease rate in order to "
+                          "increase rate of job [%s]", job_id)
+            return -1
+        logging.error("selected job [%s] to decrease rate in order to "
+                      "increase rate of job [%s]", host.hfj_job.wj_job_id,
+                      job_id)
+        # Decrease the rate to provide extra rate for job with higher priority
+        #if job.wj_rate_limit is None:
+        #    diff = DEFAULT_RATE_LIMIT
+        #else:
+        #    diff = job.wj_rate_limit - job.wj_rate
+        #limit_after = host.hfj_rate_limit - diff
+        #if limit_after < MIN_RATE_LIMIT:
+        #    limit_after = MIN_RATE_LIMIT
+        limit_after = MIN_RATE_LIMIT
+        if host.hfj_rate_limit == limit_after:
+            logging.error("no job to decrease rate in order to "
+                          "increase rate of job [%s]", job_id)
+            return -1
+        new_act = ActionHistory(qos_task, job_id,
+                                ActionHistory.ACTION_DECREASE_OTHERS,
+                                host.hfj_job.wj_job_id,
+                                host.hfj_host.sh_hostname,
+                                host.hfj_rate_limit, limit_after,
+                                ActionHistory.RESULT_RISE)
+        new_act.ah_failure_time = failure_time
+        ret = new_act.ah_act()
+        if ret:
+            return ret
+        self.prp_last_action = new_act
+        return 0
+
+    def prp_start_action(self, qos_task, job_id, failure_time):
+        """
+        Start an action. If started, return 0, else -1.
+        """
+        logging.error("checking whether to start an action for job [%s]",
+                      job_id)
+        if job_id not in qos_task.wjs_jobs:
+            return -1
+        job = qos_task.wjs_jobs[job_id]
+        rate = job.wj_rate
         if (job.wj_rate_limit is not None and
                 rate > job.wj_rate_limit * 11 / 10):
-            action = ActionHistory(job_id, rate,
-                                   ActionHistory.ACTION_DECREASE_MYSELF,
-                                   ActionHistory.RESULT_DECLINE)
-            action.ah_failure_time = failure_time
-            self.prp_last_action = action
-            job.wj_decrease_highest_host(job.wj_rate - job.wj_rate_limit)
+            host = job.wj_highest_rate_host()
+            if host is None or host.hfj_rate < MIN_RATE_LIMIT:
+                logging.error("not able to start a decrease action for job "
+                              "[%s] because all host has very small rate",
+                              job_id)
+                return -1
+
+            diff = rate - job.wj_rate_limit
+            limit_after = host.hfj_rate - diff
+            if limit_after < MIN_RATE_LIMIT:
+                limit_after = MIN_RATE_LIMIT
+            new_act = ActionHistory(qos_task, job_id,
+                                    ActionHistory.ACTION_DECREASE_MYSELF,
+                                    job_id, host.hfj_host.sh_hostname,
+                                    host.hfj_rate_limit, limit_after,
+                                    ActionHistory.RESULT_DECLINE)
+
+            new_act.ah_failure_time = failure_time
+            ret = new_act.ah_act()
+            if ret:
+                return ret
+            self.prp_last_action = new_act
             logging.error("trying to decrease rate of job [%s]",
                           job_id)
-            return 1
+            return 0
 
+        action = self.prp_last_action
         if job.wj_rate_limit is None or rate < job.wj_rate_limit * 9 / 10:
-            if action is None:
-                increase = True
-            elif action.ah_job_id != job_id:
+            if job.wj_rate_limit is None or action is None:
                 increase = True
             elif action.ah_action_type == ActionHistory.ACTION_INCREASE_MYSELF:
-                if action.ah_result == ActionHistory.RESULT_RISE:
+                assert action.ah_job_id == job_id
+                if action.ah_action_good:
+                    increase = True
+                else:
+                    increase = False
+            elif action.ah_action_type == ActionHistory.ACTION_DECREASE_MYSELF:
+                assert action.ah_job_id == job_id
+                if action.ah_action_good:
                     increase = True
                 else:
                     increase = False
             else:
-                if action.ah_result == ActionHistory.RESULT_RISE:
+                assert (action.ah_action_type ==
+                        ActionHistory.ACTION_DECREASE_OTHERS)
+                assert action.ah_job_id == job_id
+                if action.ah_action_good:
                     increase = False
                 else:
                     increase = True
 
             if increase:
-                action = ActionHistory(job_id, rate,
-                                       ActionHistory.ACTION_INCREASE_MYSELF,
-                                       ActionHistory.RESULT_RISE)
-                job.wj_increase_lowest_host()
-            else:
-                selected = None
-                higher_priority = True
-                for tmp_job_id in qos_task.wjs_jobs:
-                    tmp_job = qos_task.wjs_jobs[tmp_job_id]
-                    if tmp_job_id == job_id:
-                        higher_priority = False
-                        continue
-                    if higher_priority:
-                        continue
-                    if selected is None or selected.wj_rate <= tmp_job.wj_rate:
-                        selected = tmp_job
-                # Decrease the rate to half to provide extra rate for job with
-                # higher priority
-                selected.wj_decrease_highest_host(selected.wj_rate / 2)
-                if selected is None:
-                    logging.error("no job to decrease rate in order to "
-                                  "increase rate of job [%s]", job_id)
-                    self.prp_last_action = None
+                ret = self.prp_increase_self(qos_task, job,
+                                             job_id, failure_time)
+                if ret == 0:
                     return 0
-                action = ActionHistory(job_id, rate,
-                                       ActionHistory.ACTION_DECREASE_OTHERS,
-                                       ActionHistory.RESULT_RISE)
-            self.prp_last_action = action
-            action.ah_failure_time = failure_time
-            self.prp_last_action = action
-            logging.error("trying to increase rate of job [%s]",
-                          job_id)
-            return 1
-
-        logging.error("doing nothing for job [%s]", job_id)
-        self.prp_last_action = None
-        return 0
+                ret = self.prp_decrease_others(qos_task, job,
+                                               job_id, failure_time)
+            else:
+                ret = self.prp_decrease_others(qos_task, job,
+                                               job_id, failure_time)
+                if ret == 0:
+                    return 0
+                ret = self.prp_increase_self(qos_task, job,
+                                             job_id, failure_time)
+            return ret
+        return -1
 
     def prp_tune(self, qos_task):
         """
         Tune the jobs
         """
-        for job_id in qos_task.wjs_jobs:
-            job = qos_task.wjs_jobs[job_id]
-            ret = self.prp_job_tune(qos_task, job)
+        # If anything changed in the rate configuration, set the limitation
+        # and loop back from top priority.
+        self.prp_count += 1
+        if self.prp_count < self.prp_interval:
+            return
+        self.prp_count = 0
+        ret = self.prp_rate_limit_update(qos_task)
+        if ret:
+            self.prp_last_action = None
+            return
+
+        # Continue the action if there is one
+        job_id = None
+        if self.prp_last_action is not None:
+            action = self.prp_last_action
+            job_id = action.ah_job_id
+            ret = self.prp_last_action.ah_process(qos_task)
             if ret:
-                break
+                return
+            else:
+                if action.ah_failure_time > self.prp_max_failures:
+                    self.prp_last_action = None
+                    logging.error("too many action failures for job [%s], "
+                                  "won't try any more", job_id)
+                else:
+                    ret = self.prp_start_action(qos_task, job_id,
+                                                action.ah_failure_time)
+                    if ret == 0:
+                        return
+                    else:
+                        self.prp_last_action = None
+
+        # Start an action if no on-going action
+        assert self.prp_last_action is None
+        found = False
+        if job_id is None:
+            found = True
+        for tmp_id in qos_task.wjs_jobs:
+            if found:
+                ret = self.prp_start_action(qos_task, tmp_id, 0)
+                if ret == 0:
+                    return
+            elif tmp_id == job_id:
+                found = True
 
 
 class WatchedJobs(object):
@@ -297,7 +536,7 @@ class WatchedJobs(object):
     All the watched Jobs will be group here
     """
     def __init__(self):
-        self.wjs_jobs = {}
+        self.wjs_jobs = collections.OrderedDict()
         self.wjs_condition = threading.Condition()
 
         self.wjs_rate_policies = []
@@ -388,11 +627,23 @@ class WatchedJobs(object):
                 CLUSTER.lc_stop_tbf_rule(tbf_name)
                 del self.wjs_jobs[job_id]
 
-            self.wjs_independent_rate_policy.rp_tune_func(self)
-            # self.wjs_priority_policy.rp_tune_func(self)
+            #self.wjs_independent_rate_policy.rp_tune_func(self)
+            self.wjs_priority_policy.rp_tune_func(self)
             self.wjs_condition.release()
             logging.debug("sent datapoints of jobs")
             sleep(METRIC_INTERVAL)
+
+    def wjs_save_rates(self, end_job_id):
+        """
+        Save the rates before a job_id
+        """
+        rates = collections.OrderedDict()
+        for job_id in self.wjs_jobs:
+            job = self.wjs_jobs[job_id]
+            rates[job_id] = job.wj_rate
+            if job_id == end_job_id:
+                break
+        return rates
 
 
 class HostForJob(object):
@@ -400,12 +651,23 @@ class HostForJob(object):
     Each host has an object of HostForJob for each job
     """
     # pylint: disable=too-few-public-methods
-    def __init__(self, host):
+    def __init__(self, job, host):
         self.hfj_host = host
         # Array of services for job
         self.hfj_services = {}
         self.hfj_rate_limit = DEFAULT_RATE_LIMIT
         self.hfj_rate = 0
+        self.hfj_job = job
+
+    def hfj_change_tbf_rate(self, rate_limit):
+        """
+        Change the job's rate on this host
+        """
+        ret = self.hfj_host.lh_change_tbf_rate(self.hfj_job.wj_tbf_name,
+                                               rate_limit)
+        if ret == 0:
+            self.hfj_rate_limit = rate_limit
+        return ret
 
 
 class WatchedJob(object):
@@ -438,7 +700,7 @@ class WatchedJob(object):
             if hostname not in self.wj_hosts:
                 logging.error("service [%s] is on host [%s]", service_id,
                               hostname)
-                host_for_job = HostForJob(host)
+                host_for_job = HostForJob(self, host)
                 self.wj_hosts[hostname] = host_for_job
             else:
                 host_for_job = self.wj_hosts[hostname]
@@ -489,20 +751,41 @@ class WatchedJob(object):
         self.wj_rate = rate
         return rate
 
-    def wj_decrease_highest_host(self, diff):
-        """
-        Decrease the limit of the host with highest rate limit
-        """
+    def wj_highest_limit_host(self):
         selected = None
-        # IMPROVEMENT: this is not perfect way to select the host
-        # instead, should select the host with the higest rate
         for hostname in self.wj_hosts:
             host = self.wj_hosts[hostname]
             if (selected is None or
                     selected.hfj_rate_limit < host.hfj_rate_limit):
                 selected = host
+        return selected
+
+    def wj_highest_rate_host(self):
+        selected = None
+        for hostname in self.wj_hosts:
+            host = self.wj_hosts[hostname]
+            if (selected is None or
+                    selected.hfj_rate < host.hfj_rate):
+                selected = host
+        return selected
+
+    def wj_hosts_sort_by_rate(self):
+        hosts = []
+        for hostname in self.wj_hosts:
+            host = self.wj_hosts[hostname]
+            hosts.append(host)
+        return sorted(hosts, key=lambda host: host.hfj_rate)
+
+    def wj_decrease_highest_host(self, diff):
+        """
+        Decrease the limit of the host with highest rate limit
+        """
+        # IMPROVEMENT: this is not perfect way to select the host
+        # instead, should select the host with the higest rate
+        selected = self.wj_highest_limit_host()
         if selected is None:
             logging.error("no selected host to decrease rate")
+            return -1
         old = selected.hfj_rate_limit
         # The rate is lower than the limit, there is other bottleneck
         # Set the rate limit to the real limit to speedup the decrease process
@@ -520,6 +803,7 @@ class WatchedJob(object):
                      old, selected.hfj_rate_limit)
         selected.hfj_host.lh_change_tbf_rate(self.wj_tbf_name,
                                              selected.hfj_rate_limit)
+        return 0
 
     def wj_increase_lowest_host(self):
         """
@@ -706,13 +990,13 @@ def load_config():
     if ret:
         return -1
 
-    ret = CLUSTER.lc_enable_fake_io_for_oss()
+    #ret = CLUSTER.lc_enable_fake_io_for_oss()
+    #if ret:
+    #    return -1
+
+    ret = CLUSTER.lc_clear_loc_for_oss()
     if ret:
         return -1
-
-    # ret = CLUSTER.lc_clear_loc_for_oss()
-    # if ret:
-    #     return -1
 
     ret = CLUSTER.lc_check_cpt_for_oss()
     if ret:
