@@ -9,8 +9,6 @@
  */
 
 var QOS = {
-    NAME_JOB_COMMON: "job_",
-    ID_JOB_COMMON: "#job_",
     NAME_RATE_COMMON: "rate_",
     ID_RATE_COMMON: "#rate_",
     NAME_PANEL_COMMON: "panel_",
@@ -22,14 +20,21 @@ var QOS = {
     NAME_CONSOLE: "console",
     ID_CONSOLE: "#console",
     DEFAULT_RATE_LIMIT: 10000,
+    NAME_JOB_TABLE: "job_table",
+    ID_JOB_TABLE: "#job_table",
+    NAME_TBODY_JOB: "tbody_job",
+    ID_TBODY_JOB: "#tbody_job",
+    NAME_JOB_NAME_COMMON: "job_name_",
+    ID_JOB_NAME_COMMON: "#job_name_",
+    NAME_JOB_PERF_COMMON: "job_perf_",
+    ID_JOB_PERF_COMMON: "#job_perf_",
 };
 
-function Job(job_id, panel_chart, panel_option) {
+function Job(job_id, id_perf) {
     this.j_job_id = job_id;
-    this.j_panel_chart = panel_chart;
-    this.j_panel_option = panel_option;
     this.j_time_data = [];
     this.j_time_series = null;
+    this.j_id_perf = id_perf;
 }
 
 function QoS(lime)
@@ -49,68 +54,6 @@ QoS.prototype.qos_page_init = function()
     this.qos_lime.l_navigation.na_activate_key(NAVIGATION.KEY_QOS);
 };
 
-QoS.prototype.qos_job_panel_init = function(id_job, index)
-{
-    var panel_name = QOS.NAME_PANEL_COMMON + index;
-    string = '<div id="' + panel_name + '" class="panel"></div>';
-    $(string).appendTo(id_job);
-    var chart = echarts.init(document.getElementById(panel_name));
-    var option = {
-        series: [
-            {
-                name: 'Write Performance',
-                min: 0,
-//                max: 120,
-//                splitNumber: 12,
-                type: 'gauge',
-                detail: {
-                    formatter:'{value}',
-                    textStyle: {
-                        fontWeight: 'bolder',
-                        fontSize: 10,
-                    }
-                },
-                data: [{value: 0, name: 'MB/s'}],
-
-                axisLine: {
-                    lineStyle: {
-                        color: [[0.09, 'lime'],[0.82, '#1e90ff'],[1, '#ff4500']],
-                        width: 3,
-                        shadowBlur: 10
-                    }
-                },
-
-                axisLabel: {
-                    textStyle: {
-                        fontSize: 8,
-                    }
-                },
-
-                axisTick: {
-                    length :10,
-                    lineStyle: {
-                        color: 'auto',
-                    }
-                },
-
-                splitLine: {
-                    length :20,
-                    lineStyle: {
-                        color: 'auto',
-                    }
-                },
-                title : {
-                    textStyle: {
-                        fontSize: 10,
-                    }
-                },
-            }
-        ]
-    };
-    chart.setOption(option, true);
-    return [chart, option];
-};
-
 QoS.prototype.qos_job_init = function(job_id, index)
 {
     var that = this;
@@ -119,15 +62,21 @@ QoS.prototype.qos_job_init = function(job_id, index)
         return;
     }
 
-    var name_job = QOS.NAME_JOB_COMMON + index;
-    var id_job = QOS.ID_JOB_COMMON + index;
+    var name_job_name = QOS.NAME_JOB_NAME_COMMON + index;
+    var id_job_name = QOS.ID_JOB_NAME_COMMON + index;
+    var name_perf = QOS.NAME_JOB_PERF_COMMON + index;
+    var id_perf = QOS.ID_JOB_PERF_COMMON + index;
     var name_rate = QOS.NAME_RATE_COMMON + index;
     var id_rate = QOS.ID_RATE_COMMON + index;
-    var string = '<div id="' + name_job + '"></div>';
-    $(string).appendTo("#content");
 
-    string = '<label>' + job_id + '</label><input id="' + name_rate + '" name="value" value="' + QOS.DEFAULT_RATE_LIMIT + '">';
-    $(string).appendTo(id_job);
+    var tr = $("<tr><td><button id='" + name_job_name + "'>" + job_id + "</button></td>" +
+        "<td><input id='" + name_rate + "' name='value' value='" +
+        QOS.DEFAULT_RATE_LIMIT + "'>" + "</td>" +
+        "<td><button id='" + name_perf + "'>0</button></td>" + "</tr>");
+    tr.appendTo(QOS.ID_TBODY_JOB);
+
+    $(id_job_name).button();
+    $(id_perf).button();
 
     $(id_rate).spinner({
         spin: function(event, ui) {
@@ -149,9 +98,7 @@ QoS.prototype.qos_job_init = function(job_id, index)
         }
     });
 
-    panel_returns = this.qos_job_panel_init(id_job, index);
-
-    job = new Job(job_id, panel_returns[0], panel_returns[1]);
+    job = new Job(job_id, id_perf);
     this.qos_job_index_dict[index] = job;
     this.qos_job_id_dict[job_id] = job;
     job.j_time_series = {
@@ -173,7 +120,7 @@ QoS.prototype.qos_jobs_init = function()
     }
 };
 
-QoS.prototype.qos_time_chart_init = function(id_parent, index)
+QoS.prototype.qos_time_chart_init = function()
 {
     option = {
         title: {
@@ -204,13 +151,19 @@ QoS.prototype.qos_time_chart_init = function(id_parent, index)
         series: []
     };
 
-    var chart_name = QOS.NAME_TIME;
-    string = '<div id="' + chart_name + '" class="chart_time"></div>';
-    $(string).appendTo(id_parent);
-    var chart = echarts.init(document.getElementById(chart_name));
+    string = '<div id="' + QOS.NAME_TIME + '" class="chart_time"></div>';
+    $(string).appendTo("#content");
+    var chart = echarts.init(document.getElementById(QOS.NAME_TIME));
     chart.setOption(option, true);
+    this.qos_time_chart = chart;
+    this.qos_time_option = option;
+};
 
-    return [chart, option];
+QoS.prototype.qos_job_table_init = function()
+{
+    var table_string = '<table id="' + QOS.NAME_JOB_TABLE + '"><tbody id="' +
+        QOS.NAME_TBODY_JOB + '"></tbody></table>';
+    $(table_string).appendTo("#content");
 };
 
 QoS.prototype.qos_console_init = function()
@@ -226,9 +179,8 @@ QoS.prototype.qos_console_init = function()
 
     var websocket = new WebSocket(ws_url);
     this.qos_websocket = websocket;
-    var returns = this.qos_time_chart_init("#content");
-    this.qos_time_chart = returns[0];
-    this.qos_time_option = returns[1];
+    this.qos_time_chart_init();
+    this.qos_job_table_init();
     this.qos_jobs_init();
 
     string = '<div id="' + QOS.NAME_CONSOLE_CONTAINER +
@@ -265,9 +217,7 @@ QoS.prototype.qos_console_init = function()
                 return;
             }
             job = that.qos_job_id_dict[job_id];
-            option = job.j_panel_option;
-            option.series[0].data[0].value = Math.round(rate);
-            job.j_panel_chart.setOption(option, true);
+            $(job.j_id_perf).html(Math.round(rate));
 
             millisecond = Math.round(timestamp * 1000);
             while (job.j_time_data.length >= 60) {
@@ -289,5 +239,7 @@ QoS.prototype.qos_console_init = function()
 
 QoS.prototype.qos_page_fini = function()
 {
+    $(QOS.ID_TIME).remove();
     $(QOS.ID_CONSOLE_CONTAINER).remove();
+    $(QOS.ID_JOB_TABLE).remove();
 };
