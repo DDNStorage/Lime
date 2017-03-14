@@ -15,8 +15,8 @@ var QOS = {
     ID_RATE_COMMON: "#rate_",
     NAME_PANEL_COMMON: "panel_",
     ID_PANEL_COMMON: "#panel_",
-    NAME_TIME_COMMON: "time_",
-    ID_TIME_COMMON: "#time_",
+    NAME_TIME: "time",
+    ID_TIME: "#time",
     NAME_CONSOLE_CONTAINER: "console_container",
     ID_CONSOLE_CONTAINER: "#console_container",
     NAME_CONSOLE: "console",
@@ -24,14 +24,12 @@ var QOS = {
     DEFAULT_RATE_LIMIT: 10000,
 };
 
-function Job(job_id, panel_chart, panel_option, time_chart, time_option,
-             time_data) {
+function Job(job_id, panel_chart, panel_option) {
     this.j_job_id = job_id;
     this.j_panel_chart = panel_chart;
     this.j_panel_option = panel_option;
-    this.j_time_chart = time_chart;
-    this.j_time_option = time_option;
-    this.j_time_data = time_data;
+    this.j_time_data = [];
+    this.j_time_series = null;
 }
 
 function QoS(lime)
@@ -40,6 +38,8 @@ function QoS(lime)
     this.qos_job_id_dict = [];
     this.qos_job_index_dict = [];
     this.qos_websocket = null;
+    this.qos_time_chart = null;
+    this.qos_time_option = null;
 }
 
 QoS.prototype.qos_page_init = function()
@@ -47,55 +47,6 @@ QoS.prototype.qos_page_init = function()
     this.qos_console_init();
     this.qos_lime.l_fini_func = this.qos_page_fini;
     this.qos_lime.l_navigation.na_activate_key(NAVIGATION.KEY_QOS);
-};
-
-QoS.prototype.qos_job_time_chart_init = function(id_job, index)
-{
-    var data = [];
-
-    option = {
-        title: {
-            text: 'I/O Performance'
-        },
-        tooltip: {
-            trigger: 'axis',
-            formatter: function (params) {
-                params = params[0];
-                return params.name + ": " + params.value[1];
-            },
-            axisPointer: {
-                animation: false
-            }
-        },
-        xAxis: {
-            type: 'time',
-            splitLine: {
-                show: false
-            }
-        },
-        yAxis: {
-            type: 'value',
-            boundaryGap: [0, '100%'],
-            splitLine: {
-                show: false
-            }
-        },
-        series: [{
-            name: 'rate',
-            type: 'line',
-            showSymbol: false,
-            hoverAnimation: false,
-            data: data
-        }]
-    };
-
-    var chart_name = QOS.NAME_TIME_COMMON + index;
-    string = '<div id="' + chart_name + '" class="chart_time"></div>';
-    $(string).appendTo(id_job);
-    var chart = echarts.init(document.getElementById(chart_name));
-    chart.setOption(option, true);
-    
-    return [chart, option, data];
 };
 
 QoS.prototype.qos_job_panel_init = function(id_job, index)
@@ -141,6 +92,7 @@ QoS.prototype.qos_job_panel_init = function(id_job, index)
                         color: 'auto',
                     }
                 },
+
                 splitLine: {
                     length :20,
                     lineStyle: {
@@ -194,17 +146,23 @@ QoS.prototype.qos_job_init = function(job_id, index)
             };
             var data_string = JSON.stringify(json_data, null, 4);
             that.qos_websocket.send(data_string);
-            console.log(job_id, input_value, that.qos_job_index_dict[j], data_string);
         }
     });
 
     panel_returns = this.qos_job_panel_init(id_job, index);
-    time_returns = this.qos_job_time_chart_init(id_job, index);
 
-    job = new Job(job_id, panel_returns[0], panel_returns[1],
-                  time_returns[0], time_returns[1], time_returns[2]);
+    job = new Job(job_id, panel_returns[0], panel_returns[1]);
     this.qos_job_index_dict[index] = job;
     this.qos_job_id_dict[job_id] = job;
+    job.j_time_series = {
+        name: job_id,
+        type: 'line',
+        showSymbol: false,
+        hoverAnimation: false,
+        data: job.j_time_data
+    };
+    this.qos_time_option.series.push(job.j_time_series);
+    this.qos_time_option.legend.data.push(job_id);
 };
 
 QoS.prototype.qos_jobs_init = function()
@@ -213,6 +171,46 @@ QoS.prototype.qos_jobs_init = function()
         job_id = this.qos_lime.l_config.jobs[i].job_id;
         this.qos_job_init(job_id, i);
     }
+};
+
+QoS.prototype.qos_time_chart_init = function(id_parent, index)
+{
+    option = {
+        title: {
+            text: 'I/O Performance',
+            textStyle: {
+                fontSize: 12,
+            }
+        },
+        tooltip: {
+            trigger: 'axis',
+        },
+        legend: {
+            data: []
+        },
+        xAxis: {
+            type: 'time',
+            splitLine: {
+                show: false
+            }
+        },
+        yAxis: {
+            type: 'value',
+            boundaryGap: [0, '100%'],
+            splitLine: {
+                show: false
+            }
+        },
+        series: []
+    };
+
+    var chart_name = QOS.NAME_TIME;
+    string = '<div id="' + chart_name + '" class="chart_time"></div>';
+    $(string).appendTo(id_parent);
+    var chart = echarts.init(document.getElementById(chart_name));
+    chart.setOption(option, true);
+
+    return [chart, option];
 };
 
 QoS.prototype.qos_console_init = function()
@@ -228,6 +226,9 @@ QoS.prototype.qos_console_init = function()
 
     var websocket = new WebSocket(ws_url);
     this.qos_websocket = websocket;
+    var returns = this.qos_time_chart_init("#content");
+    this.qos_time_chart = returns[0];
+    this.qos_time_option = returns[1];
     this.qos_jobs_init();
 
     string = '<div id="' + QOS.NAME_CONSOLE_CONTAINER +
@@ -269,7 +270,6 @@ QoS.prototype.qos_console_init = function()
             job.j_panel_chart.setOption(option, true);
 
             millisecond = Math.round(timestamp * 1000);
-            console.log(millisecond, rate);
             while (job.j_time_data.length >= 60) {
                 job.j_time_data.shift();
             }
@@ -278,11 +278,7 @@ QoS.prototype.qos_console_init = function()
                 value: [millisecond, Math.round(rate)]
             });
 
-            job.j_time_chart.setOption({
-                series: [{
-                    data: job.j_time_data
-                }]
-            });
+            that.qos_time_chart.setOption(that.qos_time_option);
         } else if (type == "command_result") {
         }
     };
