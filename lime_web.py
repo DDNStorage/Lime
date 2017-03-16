@@ -592,7 +592,7 @@ class WatchedJobs(object):
     """
     All the watched Jobs will be group here
     """
-    def __init__(self):
+    def __init__(self, fake_io):
         self.wjs_jobs = collections.OrderedDict()
         self.wjs_condition = threading.Condition()
 
@@ -602,6 +602,7 @@ class WatchedJobs(object):
         self.wjs_priority_policy = PriorityRatePolicy()
         self.wjs_rate_policies.append(self.wjs_priority_policy)
         self.wjs_current_policy = self.wjs_priority_policy
+        self.wjs_current_fake_io = fake_io
         utils.thread_start(self.wjs_datapoints_send, ())
 
     def _wjs_find_job(self, job_id):
@@ -705,9 +706,13 @@ class WatchedJobs(object):
         return rates
 
     def wjs_update_config(self, config):
+        """
+        Update the configuration, usually through GUI
+        """
         cluster = config["cluster"]
         policy_name = cluster["policy"]
         jobs = cluster["jobs"]
+        fake_io = cluster["fake_io"]
         self.wjs_condition.acquire()
         if self.wjs_current_policy.rp_name != policy_name:
             for policy in self.wjs_rate_policies:
@@ -715,6 +720,16 @@ class WatchedJobs(object):
                     logging.error("changing policy to %s", policy_name)
                     self.wjs_current_policy = policy
                     break
+        if fake_io != self.wjs_current_fake_io:
+            logging.error("changing fake I/O to %s", fake_io)
+            if fake_io:
+                ret = CLUSTER.lc_enable_fake_io_for_oss()
+            else:
+                ret = CLUSTER.lc_clear_loc_for_oss()
+            if ret:
+                logging.error("failed to enable/disable fake I/O")
+            else:
+                self.wjs_current_fake_io = fake_io
         for config_job in jobs:
             job_id = config_job["job_id"]
             thoughput = config_job["throughput"]
@@ -958,7 +973,7 @@ class ServiceForJob(object):
         self.sfj_value = value
 
 
-WATCHED_JOBS = WatchedJobs()
+WATCHED_JOBS = None
 
 
 @APP.route("/")
@@ -1078,6 +1093,8 @@ def load_config():
     CLUSTER = lustre_config.LustreCluster(fsname, hosts,
                                           ssh_identity_file=identity)
     logging.debug("detecting services")
+    global WATCHED_JOBS
+    WATCHED_JOBS = WatchedJobs(fake_io)
     ret = CLUSTER.lc_detect_services()
     if ret:
         return -1

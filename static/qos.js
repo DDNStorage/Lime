@@ -194,7 +194,10 @@ QoS.prototype.qos_policy_init = function()
             policies[i] + "</option>";
     }
 
-    var tr = $("<tr><td><select id='" + QOS.NAME_POLICY + "'></select></td>" + "</tr>");
+    var tr = $("<tr><td><select id='" + QOS.NAME_POLICY + "'></select></td>" +
+               "<td><div id='div_fake_io'><label for='fake_io'>Enable fake I/O</label>" +
+               "<input type='checkbox' name='fake_io' id='fake_io'></div></td>" +
+               "</tr>");
     tr.appendTo(QOS.ID_TBODY_POLICY);
     $(QOS.ID_POLICY).html(value_select);
     var that = this;
@@ -211,6 +214,18 @@ QoS.prototype.qos_policy_init = function()
         },
     });
     $(QOS.ID_POLICY).selectmenu().selectmenu("menuWidget").addClass("overflow");
+
+    $("#div_fake_io").controlgroup()
+    $("#fake_io").on("change", function(e) {
+        var config = that.qos_lime.l_config;
+        if ($(e.target).is(":checked")) {
+            config.cluster.fake_io = true;
+        } else {
+            config.cluster.fake_io = false;
+        }
+        var data_string = JSON.stringify(config, null, 4);
+        that.qos_websocket.send(data_string);
+    });
 };
 
 QoS.prototype.qos_console_init = function()
