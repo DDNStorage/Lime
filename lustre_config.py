@@ -10,18 +10,27 @@ import logging
 
 # local libs
 import ssh_host
+import utils
 
 
 class LustreService(object):
+    # pylint: disable=too-few-public-methods
     """
     Each Lustre service has an object of LustreService
     """
-    # pylint: disable=too-few-public-methods
-    def __init__(self, cluster, service_type, service_index, host):
+    TYPE_OST = "OST"
+    TYPE_MDT = "MDT"
+    TYPE_MGS = "MGS"
+    TYPE_CLIENT = "CLIENT"
+
+    def __init__(self, cluster, service_type, service_name, host,
+                 mount_point=None):
+        # pylint: disable=too-many-arguments
         self.ls_cluster = cluster
         self.ls_service_type = service_type
-        self.ls_service_index = service_index
+        self.ls_service_name = service_name
         self.ls_host = host
+        self.ls_mount_point = mount_point
 
 
 def version_value(major, minor, patch):
@@ -64,6 +73,7 @@ class LustreHost(ssh_host.SSHHost):
         self.lh_detect_lustre_version()
 
     def lh_detect_services(self, cluster_services, map_service_host):
+        # pylint: disable=too-many-statements
         """
         Detect the services on this host
         """
@@ -97,7 +107,9 @@ class LustreHost(ssh_host.SSHHost):
                                   service.ls_host.sh_hostname,
                                   self.sh_hostname, service_name)
                     return -1
-                service = LustreService(self.lh_cluster, "MDT", mdt_index,
+                service = LustreService(self.lh_cluster,
+                                        LustreService.TYPE_MDT,
+                                        service_name,
                                         self)
                 cluster_services[service_name] = service
                 services[service_name] = service
@@ -114,13 +126,14 @@ class LustreHost(ssh_host.SSHHost):
                                   service.ls_host.sh_hostname,
                                   self.sh_hostname, service_name)
                     return -1
-                service = LustreService(self.lh_cluster, "OST", ost_index,
+                service = LustreService(self.lh_cluster,
+                                        LustreService.TYPE_OST, service_name,
                                         self)
                 cluster_services[service_name] = service
                 services[service_name] = service
                 map_service_host[service_name] = self
 
-            match = self.lh_cluster.lc_mgs_pattern.match(line)
+            match = self.lh_cluster.lc_mgs_regular.match(line)
             if match:
                 service_name = "MGS"
                 logging.debug("service [%s] running on host [%s]",
@@ -129,10 +142,42 @@ class LustreHost(ssh_host.SSHHost):
                     logging.error("two hosts [%s] and [%s] for service [%s]",
                                   service.ls_host.sh_hostname,
                                   self.sh_hostname, service_name)
-                service = LustreService(self.lh_cluster, "MGS", 0, self)
+                service = LustreService(self.lh_cluster,
+                                        LustreService.TYPE_MGS,
+                                        service_name, self)
                 cluster_services[service_name] = service
                 services[service_name] = service
                 map_service_host[service_name] = self
+
+        # Detect Lustre client
+        command = ("cat /proc/mounts | grep lustre")
+        retval = self.sh_run(command)
+        if retval.cr_exit_status != 0:
+            logging.error("failed to run command [%s] on host [%s], "
+                          "ret = [%d], stdout = [%s], stderr = [%s]",
+                          command, self.sh_hostname,
+                          retval.cr_exit_status,
+                          retval.cr_stdout,
+                          retval.cr_stderr)
+            return -1
+
+        for line in retval.cr_stdout.splitlines():
+            logging.debug("checking line [%s]", line)
+            match = self.lh_cluster.lc_client_regular.match(line)
+            if match:
+                mount_point = match.group("mount_point")
+                service_name = ("client:%s:%s" %
+                                (self.sh_hostname, mount_point))
+                service = LustreService(self.lh_cluster,
+                                        LustreService.TYPE_CLIENT,
+                                        service_name, self,
+                                        mount_point=mount_point)
+                cluster_services[service_name] = service
+                services[service_name] = service
+                map_service_host[service_name] = self
+                logging.debug("service [%s] running on host [%s]",
+                              service_name, self.sh_hostname)
+
         self.lh_services = services
         return 0
 
@@ -348,6 +393,32 @@ class LustreHost(ssh_host.SSHHost):
         """
         Restart collectd
         """
+        # Sometimes collectd is dead, and service restart collectd stuck
+        # there forever, so kill it by signal 9
+        command = ("ps aux | grep /usr/sbin/collectd | grep -v grep "
+                   "| awk '{print $2}'")
+        retval = self.sh_run(command)
+        if retval.cr_exit_status != 0:
+            logging.error("failed to run command [%s] on host [%s], "
+                          "ret = [%d], stdout = [%s], stderr = [%s]",
+                          command, self.sh_hostname,
+                          retval.cr_exit_status,
+                          retval.cr_stdout,
+                          retval.cr_stderr)
+            return -1
+        process_id = retval.cr_stdout.strip()
+        if process_id != "":
+            command = ("kill -9 %s" % process_id)
+            retval = self.sh_run(command)
+            if retval.cr_exit_status != 0:
+                logging.error("failed to run command [%s] on host [%s], "
+                              "ret = [%d], stdout = [%s], stderr = [%s]",
+                              command, self.sh_hostname,
+                              retval.cr_exit_status,
+                              retval.cr_stdout,
+                              retval.cr_stderr)
+                return -1
+
         command = ("service collectd restart")
         retval = self.sh_run(command)
         if retval.cr_exit_status != 0:
@@ -360,11 +431,93 @@ class LustreHost(ssh_host.SSHHost):
             return -1
         return 0
 
+    def lh_io_thread(self, login_name, fname):
+        """
+        The thread of doing I/O
+        """
+        while True:
+            command = ("dd if=/dev/zero of=%s bs=1M" % (fname))
+            retval = self.sh_run(command, login_name=login_name)
+            if retval.cr_exit_status != 0:
+                logging.error("failed to run command [%s] on host [%s], "
+                              "ret = [%d], stdout = [%s], stderr = [%s]",
+                              command, self.sh_hostname,
+                              retval.cr_exit_status,
+                              retval.cr_stdout,
+                              retval.cr_stderr)
+                return -1
+        return 0
+
+    def lh_start_io(self, service, index, stripe_count=None,
+                    login_name="root"):
+        """
+        Start IO with user
+        """
+        fname = ("%s/%s_%s_%s" % (service.ls_mount_point, login_name,
+                                  service.ls_host.sh_hostname, index))
+
+        command = ("rm -f %s" % (fname))
+        retval = self.sh_run(command)
+        if retval.cr_exit_status != 0:
+            logging.error("failed to run command [%s] on host [%s], "
+                          "ret = [%d], stdout = [%s], stderr = [%s]",
+                          command, self.sh_hostname,
+                          retval.cr_exit_status,
+                          retval.cr_stdout,
+                          retval.cr_stderr)
+            return -1
+
+        stripe = ""
+        if stripe_count is not None:
+            stripe = ("-c %d" % stripe_count)
+
+        command = ("lfs setstripe %s %s" % (stripe, fname))
+        retval = self.sh_run(command)
+        if retval.cr_exit_status != 0:
+            logging.error("failed to run command [%s] on host [%s], "
+                          "ret = [%d], stdout = [%s], stderr = [%s]",
+                          command, self.sh_hostname,
+                          retval.cr_exit_status,
+                          retval.cr_stdout,
+                          retval.cr_stderr)
+            return -1
+
+        command = ("chmod 777 %s" % (fname))
+        retval = self.sh_run(command)
+        if retval.cr_exit_status != 0:
+            logging.error("failed to run command [%s] on host [%s], "
+                          "ret = [%d], stdout = [%s], stderr = [%s]",
+                          command, self.sh_hostname,
+                          retval.cr_exit_status,
+                          retval.cr_stdout,
+                          retval.cr_stderr)
+            return -1
+
+        utils.thread_start(self.lh_io_thread, (login_name, fname))
+        return 0
+
+    def lh_stop_io(self, service):
+        """
+        Start IO with user
+        """
+        command = ("fuser -km %s" % (service.ls_mount_point))
+        retval = self.sh_run(command)
+        if (retval.cr_exit_status != 0 and retval.cr_exit_status != 1 and
+                retval.cr_stderr != ""):
+            logging.error("failed to run command [%s] on host [%s], "
+                          "ret = [%d], stdout = [%s], stderr = [%s]",
+                          command, self.sh_hostname,
+                          retval.cr_exit_status,
+                          retval.cr_stdout,
+                          retval.cr_stderr)
+            return -1
+
 
 class LustreCluster(object):
     """
     Each Lustre cluster has an object of LustreCluster
     """
+    # pylint: disable=too-many-instance-attributes
     def __init__(self, fsname, server_hostnames, ssh_identity_file=None):
         self.lc_hosts = []
         self.lc_fsname = fsname
@@ -378,13 +531,19 @@ class LustreCluster(object):
         self.lc_ost_regular = re.compile(ost_pattern)
         mgs_pattern = (r"^.+ UP mgs MGS MGS .+$")
         logging.debug("mgs_pattern: [%s]", mgs_pattern)
-        self.lc_mgs_pattern = re.compile(mgs_pattern)
+        self.lc_mgs_regular = re.compile(mgs_pattern)
+        client_pattern = (r"^.+:/%s (?P<mount_point>\S+) lustre .+$" %
+                          self.lc_fsname)
+        self.lc_client_regular = re.compile(client_pattern)
+        logging.debug("client_pattern: [%s]", client_pattern)
         for hostname in server_hostnames:
             host = LustreHost(self, hostname, identity_file=ssh_identity_file)
             self.lc_hosts.append(host)
         self.lc_services = {}
         # Mapping from service name to host
         self.lc_map_service_host = {}
+        self.lc_ost_number = 0
+        self.lc_client_number = 0
 
     def lc_detect_services(self):
         """
@@ -400,6 +559,12 @@ class LustreCluster(object):
                 return ret
         self.lc_services = services
         self.lc_map_service_host = map_service_host
+        for service_name, service in self.lc_services.iteritems():
+            logging.debug("itering on service [%s]", service_name)
+            if service.ls_service_type == LustreService.TYPE_OST:
+                self.lc_ost_number += 1
+            elif service.ls_service_type == LustreService.TYPE_CLIENT:
+                self.lc_client_number += 1
         return 0
 
     def lc_check_cpt_for_oss(self):
@@ -427,7 +592,7 @@ class LustreCluster(object):
         """
         hosts = []
         for service_name, service in self.lc_services.iteritems():
-            if service.ls_service_type != "OST":
+            if service.ls_service_type != LustreService.TYPE_OST:
                 continue
             if service.ls_host.sh_hostname in hosts:
                 continue
@@ -440,14 +605,13 @@ class LustreCluster(object):
             hosts.append(service.ls_host.sh_hostname)
         return 0
 
-
     def lc_clear_loc_for_oss(self):
         """
         Clear LOC, thus fake IO on OSS will be disabled
         """
         hosts = []
         for service_name, service in self.lc_services.iteritems():
-            if service.ls_service_type != "OST":
+            if service.ls_service_type != LustreService.TYPE_OST:
                 continue
             if service.ls_host.sh_hostname in hosts:
                 continue
@@ -466,7 +630,7 @@ class LustreCluster(object):
         """
         hosts = []
         for service_name, service in self.lc_services.iteritems():
-            if service.ls_service_type != "OST":
+            if service.ls_service_type != LustreService.TYPE_OST:
                 continue
             if service.ls_host.sh_hostname in hosts:
                 continue
@@ -506,7 +670,7 @@ class LustreCluster(object):
         """
         hosts = []
         for service_name, service in self.lc_services.iteritems():
-            if service.ls_service_type != "OST":
+            if service.ls_service_type != LustreService.TYPE_OST:
                 continue
             if service.ls_host.sh_hostname in hosts:
                 continue
@@ -525,7 +689,7 @@ class LustreCluster(object):
         """
         hosts = []
         for service_name, service in self.lc_services.iteritems():
-            if service.ls_service_type != "OST":
+            if service.ls_service_type != LustreService.TYPE_OST:
                 continue
             if service.ls_host.sh_hostname in hosts:
                 continue
@@ -544,7 +708,7 @@ class LustreCluster(object):
         """
         hosts = []
         for service_name, service in self.lc_services.iteritems():
-            if service.ls_service_type != "OST":
+            if service.ls_service_type != LustreService.TYPE_OST:
                 continue
             if service.ls_host.sh_hostname in hosts:
                 continue
@@ -563,7 +727,7 @@ class LustreCluster(object):
         """
         hosts = []
         for service_name, service in self.lc_services.iteritems():
-            if service.ls_service_type != "OST":
+            if service.ls_service_type != LustreService.TYPE_OST:
                 continue
             if service.ls_host.sh_hostname in hosts:
                 continue
@@ -591,6 +755,46 @@ class LustreCluster(object):
                               service.ls_host.sh_hostname)
                 return ret
             hosts.append(service.ls_host.sh_hostname)
+        return 0
+
+    def lc_start_io(self, jobs):
+        """
+        Start IO
+        """
+        if len(jobs) > self.lc_client_number:
+            logging.error("not enough client [%d] for jobs [%d]",
+                          self.lc_client_number, len(jobs))
+            return -1
+
+        stripe_count = None
+        if self.lc_ost_number != 0:
+            stripe_count = self.lc_ost_number
+
+        for service_name in self.lc_services:
+            service = self.lc_services[service_name]
+            if service.ls_service_type != LustreService.TYPE_CLIENT:
+                continue
+            ret = service.ls_host.lh_stop_io(service)
+            if ret:
+                logging.error("failed to stop I/O on host [%s]",
+                              service.ls_host.sh_hostname)
+                return ret
+
+        index = 0
+        for service_name, service in self.lc_services.iteritems():
+            job = jobs[index]
+            login_name = job["login_name"]
+            logging.debug("itering on service [%s]", service_name)
+            if service.ls_service_type != LustreService.TYPE_CLIENT:
+                continue
+            ret = service.ls_host.lh_start_io(service, index,
+                                              stripe_count=stripe_count,
+                                              login_name=login_name)
+            if ret:
+                logging.error("failed to start I/O on host [%s]",
+                              service.ls_host.sh_hostname)
+                return ret
+            index += 1
         return 0
 
 

@@ -114,8 +114,8 @@ QoS.prototype.qos_job_init = function(job_id, index)
 
 QoS.prototype.qos_jobs_init = function()
 {
-    for(var i = 0; i < this.qos_lime.l_config.jobs.length; i++) {
-        job_id = this.qos_lime.l_config.jobs[i].job_id;
+    for(var i = 0; i < this.qos_lime.l_config.cluster.jobs.length; i++) {
+        job_id = this.qos_lime.l_config.cluster.jobs[i].job_id;
         this.qos_job_init(job_id, i);
     }
 };

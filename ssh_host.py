@@ -699,7 +699,7 @@ class SSHHost(object):
 
         return 0
 
-    def sh_run(self, command, silent=False,
+    def sh_run(self, command, silent=False, login_name="root",
                timeout=LONGEST_SIMPLE_COMMAND_TIME, stdout_tee=None,
                stderr_tee=None, stdin=None, return_stdout=True,
                return_stderr=True, quit_func=None):
@@ -707,7 +707,8 @@ class SSHHost(object):
         Run a command on the host
         """
         # pylint: disable=too-many-arguments
-        ret = ssh_run(self.sh_hostname, command, timeout=timeout,
+        ret = ssh_run(self.sh_hostname, command, login_name=login_name,
+                      timeout=timeout,
                       stdout_tee=stdout_tee, stderr_tee=stderr_tee,
                       stdin=stdin, return_stdout=return_stdout,
                       return_stderr=return_stderr, quit_func=quit_func,

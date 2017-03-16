@@ -1,3 +1,4 @@
+# pylint: disable=too-many-lines
 # Copyright (c) 2017 DataDirect Networks, Inc.
 # All Rights Reserved.
 # Author: lixi@ddn.com
@@ -11,6 +12,7 @@ import threading
 import logging
 import logging.handlers
 import time
+import sys
 from gevent.wsgi import WSGIServer
 from gevent import monkey, sleep
 from geventwebsocket.handler import WebSocketHandler
@@ -104,7 +106,7 @@ class ActionHistory(object):
     """
     Action history
     """
-    # pylint: disable=too-few-public-methods
+    # pylint: disable=too-many-instance-attributes
     RESULT_RISE = "rise"
     RESULT_DECLINE = "decline"
     RESULT_UNCHANGED = "unchanged"
@@ -117,6 +119,7 @@ class ActionHistory(object):
 
     def __init__(self, qos_task, job_id, action_type, action_job_id,
                  action_hostname, limit_before, limit_after, expected_result):
+        # pylint: disable=too-many-arguments
         self.ah_qos_task = qos_task
         self.ah_job_id = job_id
         self.ah_rates_original = qos_task.wjs_save_rates(job_id)
@@ -139,6 +142,9 @@ class ActionHistory(object):
         self.ah_failure_time = 0
 
     def ah_declined_after_action(self):
+        """
+        Check whether this action causes decline of jobs
+        """
         for job_id in self.ah_rates_after_action:
             if self.ah_job_id == job_id:
                 break
@@ -154,6 +160,7 @@ class ActionHistory(object):
         """
         Whether the action has expected result
         """
+        # pylint: disable=too-many-return-statements
         job_id = self.ah_job_id
         if job_id not in self.ah_rates_original:
             logging.error("can't get original rate of job [%s]", job_id)
@@ -193,6 +200,9 @@ class ActionHistory(object):
         return False
 
     def ah_regret(self):
+        """
+        Regret the action
+        """
         assert self.ah_stage == ActionHistory.STAGE_ACTED
         logging.error("changing rate of host [%s] for job [%s] from [%d] "
                       "back to [%d]",
@@ -213,6 +223,9 @@ class ActionHistory(object):
         return 0
 
     def ah_act(self):
+        """
+        Do the action
+        """
         assert self.ah_stage == ActionHistory.STAGE_ORIGIN
         if (self.ah_action_type == ActionHistory.ACTION_DECREASE_MYSELF or
                 self.ah_action_type == ActionHistory.ACTION_INCREASE_MYSELF or
@@ -292,6 +305,10 @@ class PriorityRatePolicy(RatePolicy):
         self.prp_count = 0
 
     def prp_rate_limit_update(self, qos_task):
+        """
+        The rate is updated by GUI
+        """
+        # pylint: disable=no-self-use
         changed = False
         for job_id in qos_task.wjs_jobs:
             job = qos_task.wjs_jobs[job_id]
@@ -316,9 +333,14 @@ class PriorityRatePolicy(RatePolicy):
         return changed
 
     def prp_increase_self(self, qos_task, job, job_id, failure_time):
-        hosts = job.wj_hosts_sort_by_rate()
+        """
+        Try to increase the rate of itself
+        """
+        hosts = job.wj_hosts_sort_by_throughput()
         selected = None
         for host in hosts:
+            logging.error("checking host [%s] with total throughput [%d]",
+                          host.hfj_host.sh_hostname, host.hfj_rate)
             diff = MIN_RATE_LIMIT * 2
             limit_after = host.hfj_rate_limit + diff
             if limit_after > DEFAULT_RATE_LIMIT:
@@ -349,21 +371,38 @@ class PriorityRatePolicy(RatePolicy):
         return 0
 
     def prp_decrease_others(self, qos_task, job, job_id, failure_time):
+        """
+        Decrease the rate of some other job.
+        """
         logging.error("trying to increase rate of job [%s] by "
                       "decreasing rates of other jobs", job_id)
         host = None
         for hostname in job.wj_hosts:
+            logging.error("checking any job to decrease rate on host [%s] ",
+                          hostname)
             higher_priority = True
+            if hostname not in job.wj_hosts:
+                logging.error("not going to decrease jobs on host [%s] "
+                              "because job [%s] has no rate on host [%s]",
+                              hostname, job_id, hostname)
+                continue
             for tmp_job_id in qos_task.wjs_jobs:
                 tmp_job = qos_task.wjs_jobs[tmp_job_id]
                 if tmp_job_id == job_id:
                     higher_priority = False
                     continue
                 if higher_priority:
+                    logging.error("not going to decrease job [%s] because "
+                                  "it has higher priority", tmp_job_id)
                     continue
                 if tmp_job.wj_rate == 0:
+                    logging.error("not going to decrease job [%s] because "
+                                  "it has no rate", tmp_job_id)
                     continue
                 if hostname not in tmp_job.wj_hosts:
+                    logging.error("not going to decrease job [%s] because "
+                                  "it has no rate on host [%s]", tmp_job_id,
+                                  hostname)
                     continue
                 tmp_host = tmp_job.wj_hosts[hostname]
                 if host is None or host.hfj_rate < tmp_host.hfj_rate:
@@ -402,6 +441,7 @@ class PriorityRatePolicy(RatePolicy):
         return 0
 
     def prp_start_action(self, qos_task, job_id, failure_time):
+        # pylint: disable=too-many-branches,too-many-return-statements
         """
         Start an action. If started, return 0, else -1.
         """
@@ -413,7 +453,7 @@ class PriorityRatePolicy(RatePolicy):
         rate = job.wj_rate
         if (job.wj_rate_limit is not None and
                 rate > job.wj_rate_limit * 11 / 10):
-            host = job.wj_highest_rate_host()
+            host = job.wj_highest_throughput_host()
             if host is None or host.hfj_rate < MIN_RATE_LIMIT:
                 logging.error("not able to start a decrease action for job "
                               "[%s] because all host has very small rate",
@@ -482,6 +522,7 @@ class PriorityRatePolicy(RatePolicy):
         return -1
 
     def prp_tune(self, qos_task):
+        # pylint: disable=too-many-branches
         """
         Tune the jobs
         """
@@ -752,6 +793,9 @@ class WatchedJob(object):
         return rate
 
     def wj_highest_limit_host(self):
+        """
+        Return the host with the highest rate limit
+        """
         selected = None
         for hostname in self.wj_hosts:
             host = self.wj_hosts[hostname]
@@ -760,7 +804,10 @@ class WatchedJob(object):
                 selected = host
         return selected
 
-    def wj_highest_rate_host(self):
+    def wj_highest_throughput_host(self):
+        """
+        Return the host with the highest throughput
+        """
         selected = None
         for hostname in self.wj_hosts:
             host = self.wj_hosts[hostname]
@@ -769,7 +816,10 @@ class WatchedJob(object):
                 selected = host
         return selected
 
-    def wj_hosts_sort_by_rate(self):
+    def wj_hosts_sort_by_throughput(self):
+        """
+        Sort the host by its throughput
+        """
         hosts = []
         for hostname in self.wj_hosts:
             host = self.wj_hosts[hostname]
@@ -927,7 +977,8 @@ def app_console_websocket():
         websocket = request.environ['wsgi.websocket']
         config_string = websocket.receive()
         config = json.loads(config_string)
-        jobs = config["jobs"]
+        cluster = config["cluster"]
+        jobs = cluster["jobs"]
         for job in jobs:
             job_id = job["job_id"]
             WATCHED_JOBS.wjs_watch_job(job_id, websocket)
@@ -978,6 +1029,8 @@ def load_config():
     for host in cluster["hosts"]:
         hosts.append(host["name"])
     identity = cluster["ssh_identity_file"]
+    fake_io = cluster["fake_io"]
+    jobs = cluster["jobs"]
     logging.debug("fsname: [%s], hosts: %s", fsname, hosts)
     CLUSTER = lustre_config.LustreCluster(fsname, hosts,
                                           ssh_identity_file=identity)
@@ -990,13 +1043,14 @@ def load_config():
     if ret:
         return -1
 
-    #ret = CLUSTER.lc_enable_fake_io_for_oss()
-    #if ret:
-    #    return -1
-
-    ret = CLUSTER.lc_clear_loc_for_oss()
-    if ret:
-        return -1
+    if fake_io:
+        ret = CLUSTER.lc_enable_fake_io_for_oss()
+        if ret:
+            return -1
+    else:
+        ret = CLUSTER.lc_clear_loc_for_oss()
+        if ret:
+            return -1
 
     ret = CLUSTER.lc_check_cpt_for_oss()
     if ret:
@@ -1014,6 +1068,10 @@ def load_config():
     if ret:
         return -1
 
+    ret = CLUSTER.lc_start_io(jobs)
+    if ret:
+        return -1
+
     return 0
 
 
@@ -1026,14 +1084,17 @@ def start_web():
         os.mkdir(logdir)
     elif not os.path.isdir(logdir):
         logging.error("[%s] is not a directory", logdir)
+        sys.exit(-1)
     utils.configure_logging("./")
     ret = load_config()
     if ret:
         logging.error("failed to load config")
+        sys.exit(ret)
     monkey.patch_all()
     http_server = WSGIServer(('0.0.0.0', 24), APP,
                              handler_class=WebSocketHandler)
     http_server.serve_forever()
+    sys.exit(0)
 
 
 if __name__ == "__main__":

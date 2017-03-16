@@ -1,6 +1,6 @@
 {
     "cluster": {
-        "name": "lustre",
+        "name": "server1",
         "hosts": [
             {
                 "name": "server1"
@@ -9,23 +9,17 @@
                 "name": "server9"
             }
         ],
-        "ssh_identity_file": "/root/.ssh/id_dsa"
-    },
-    "jobs": [
-        {
-            "job_id": "dd.0"
-        },
-        {
-            "job_id": "dd.1001"
-        },
-        {
-            "job_id": "dd.1002"
-        },
-        {
-            "job_id": "dd.1003"
-        },
-        {
-            "job_id": "dd.1004"
-        }
-    ]
+        "fake_io": false,
+        "ssh_identity_file": "/root/.ssh/id_dsa",
+        "jobs": [
+            {
+                "job_id": "dd.0",
+                "login_name": "root"
+            },
+            {
+                "job_id": "dd.1001",
+                "login_name": "lime"
+            }
+        ]
+    }
 }
