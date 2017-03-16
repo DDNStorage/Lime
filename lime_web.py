@@ -704,6 +704,17 @@ class WatchedJobs(object):
             rates[action_job_id] = self.wjs_jobs[action_job_id].wj_rate
         return rates
 
+    def wjs_update_config(self, config):
+        cluster = config["cluster"]
+        jobs = cluster["jobs"]
+        self.wjs_condition.acquire()
+        for config_job in jobs:
+            job_id = config_job["job_id"]
+            thoughput = config_job["throughput"]
+            job = self.wjs_jobs[job_id]
+            job.wj_rate_limit = int(thoughput)
+        self.wjs_condition.release()
+
 
 class HostForJob(object):
     """
@@ -1013,22 +1024,18 @@ def app_console_websocket():
             WATCHED_JOBS.wjs_watch_job(job_id, websocket)
 
         while not websocket.closed:
-            control_command = websocket.receive()
-            logging.debug("command: %s", control_command)
-            control = json.loads(control_command)
-            job_id = control["job_id"]
-            rate = control["rate"]
-            job = WATCHED_JOBS.wjs_find_job(job_id)
-            if job is None:
+            data = websocket.receive()
+            logging.debug("command: %s", data)
+            config = json.loads(data)
+            ret = WATCHED_JOBS.wjs_update_config(config)
+            if ret:
                 result = "failure"
             else:
-                job.wj_rate_limit = int(rate)
                 result = "success"
+
             json_string = json.dumps({
                 "type": "command_result",
-                "command": "change_rate",
-                "rate": rate,
-                "job_id": job_id,
+                "command": "change_config",
                 "result": result})
             logging.debug("sent result")
             websocket.send(json_string)

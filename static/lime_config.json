@@ -14,11 +14,13 @@
         "jobs": [
             {
                 "job_id": "dd.0",
-                "login_name": "root"
+                "login_name": "root",
+                "throughput": "10000"
             },
             {
                 "job_id": "dd.1001",
-                "login_name": "lime"
+                "login_name": "lime",
+                "throughput": "10000"
             }
         ]
     }

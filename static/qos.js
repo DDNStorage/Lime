@@ -89,11 +89,19 @@ QoS.prototype.qos_job_init = function(job_id, index)
             var input_value = $(this).val();
             var j = this.id.substring(QOS.NAME_RATE_COMMON.length);
             var job_id = that.qos_job_index_dict[j].j_job_id;
-            var json_data = {
-                job_id: job_id,
-                rate: input_value,
-            };
-            var data_string = JSON.stringify(json_data, null, 4);
+
+            var config = that.qos_lime.l_config
+            var jobs = config.cluster.jobs
+            var job = null
+            for(var i = 0; i < jobs.length; i++) {
+                tmp_job = jobs[i]
+                if (tmp_job.job_id == job_id) {
+                    job = tmp_job;
+                    break;
+                }
+            }
+            job.throughput = input_value;
+            var data_string = JSON.stringify(config, null, 4);
             that.qos_websocket.send(data_string);
         }
     });
