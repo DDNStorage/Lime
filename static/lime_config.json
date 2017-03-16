@@ -11,6 +11,7 @@
         ],
         "fake_io": false,
         "ssh_identity_file": "/root/.ssh/id_dsa",
+        "policy": "priority",
         "jobs": [
             {
                 "job_id": "dd.0",

@@ -24,6 +24,13 @@ var QOS = {
     ID_JOB_TABLE: "#job_table",
     NAME_TBODY_JOB: "tbody_job",
     ID_TBODY_JOB: "#tbody_job",
+    NAME_POLICY_TABLE: "policy_table",
+    ID_POLICY_TABLE: "#policy_table",
+    NAME_TBODY_POLICY: "tbody_policy",
+    ID_TBODY_POLICY: "#tbody_policy",
+    NAME_POLICY: "policy",
+    ID_POLICY: "#policy",
+    WIDTH_POLICY: 200,
     NAME_JOB_NAME_COMMON: "job_name_",
     ID_JOB_NAME_COMMON: "#job_name_",
     NAME_JOB_PERF_COMMON: "job_perf_",
@@ -174,6 +181,38 @@ QoS.prototype.qos_job_table_init = function()
     $(table_string).appendTo("#content");
 };
 
+QoS.prototype.qos_policy_init = function()
+{
+    var table_string = '<table id="' + QOS.NAME_POLICY_TABLE + '"><tbody id="' +
+        QOS.NAME_TBODY_POLICY + '"></tbody></table>';
+    $(table_string).appendTo("#content");
+
+    var value_select = '';
+    policies = ["priority", "independent"];
+    for (var i = 0; i < policies.length; i++) {
+        value_select += "<option value='" + policies[i] + "'>" +
+            policies[i] + "</option>";
+    }
+
+    var tr = $("<tr><td><select id='" + QOS.NAME_POLICY + "'></select></td>" + "</tr>");
+    tr.appendTo(QOS.ID_TBODY_POLICY);
+    $(QOS.ID_POLICY).html(value_select);
+    var that = this;
+
+    $(QOS.ID_POLICY).selectmenu({
+        width: QOS.WIDTH_POLICY,
+        icons: { button: "ui-icon-caret-1-s" },
+        change: function(event, ui) {
+            var policy = ui.item.value;
+            var config = that.qos_lime.l_config;
+            config.cluster.policy = policy;
+            var data_string = JSON.stringify(config, null, 4);
+            that.qos_websocket.send(data_string);
+        },
+    });
+    $(QOS.ID_POLICY).selectmenu().selectmenu("menuWidget").addClass("overflow");
+};
+
 QoS.prototype.qos_console_init = function()
 {
     if (window.WebSocket === undefined) {
@@ -187,6 +226,7 @@ QoS.prototype.qos_console_init = function()
 
     var websocket = new WebSocket(ws_url);
     this.qos_websocket = websocket;
+    this.qos_policy_init();
     this.qos_time_chart_init();
     this.qos_job_table_init();
     this.qos_jobs_init();
@@ -250,4 +290,5 @@ QoS.prototype.qos_page_fini = function()
     $(QOS.ID_TIME).remove();
     $(QOS.ID_CONSOLE_CONTAINER).remove();
     $(QOS.ID_JOB_TABLE).remove();
+    $(QOS.ID_POLICY_TABLE).remove();
 };

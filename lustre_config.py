@@ -511,7 +511,23 @@ class LustreHost(ssh_host.SSHHost):
                           retval.cr_stdout,
                           retval.cr_stderr)
             return -1
+        return 0
 
+    def lh_remove_files(self, service):
+        """
+        Remove files under root directory
+        """
+        command = ("rm -f %s/*" % (service.ls_mount_point))
+        retval = self.sh_run(command)
+        if retval.cr_exit_status != 0:
+            logging.error("failed to run command [%s] on host [%s], "
+                          "ret = [%d], stdout = [%s], stderr = [%s]",
+                          command, self.sh_hostname,
+                          retval.cr_exit_status,
+                          retval.cr_stdout,
+                          retval.cr_stderr)
+            return -1
+        return 0
 
 class LustreCluster(object):
     """
@@ -779,6 +795,16 @@ class LustreCluster(object):
                 logging.error("failed to stop I/O on host [%s]",
                               service.ls_host.sh_hostname)
                 return ret
+
+        for service_name in self.lc_services:
+            service = self.lc_services[service_name]
+            if service.ls_service_type == LustreService.TYPE_CLIENT:
+                ret = service.ls_host.lh_remove_files(service)
+                if ret:
+                    logging.error("failed to remove files on host [%s]",
+                                  service.ls_host.sh_hostname)
+                    return ret
+                break
 
         index = 0
         for service_name, service in self.lc_services.iteritems():

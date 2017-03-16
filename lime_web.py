@@ -54,7 +54,7 @@ class IndependentRatePolicy(RatePolicy):
                    "2) cluster has enough bandwiths for all jobs;\n"
                    "3) jobs are doing fake I/O and also network bandwidth is "
                    "not performance bottleneck.")
-        super(IndependentRatePolicy, self).__init__("exclusive", comment,
+        super(IndependentRatePolicy, self).__init__("independent", comment,
                                                     self.irp_tune)
 
     def irp_job_tune(self, job):
@@ -601,6 +601,7 @@ class WatchedJobs(object):
         self.wjs_rate_policies.append(self.wjs_independent_rate_policy)
         self.wjs_priority_policy = PriorityRatePolicy()
         self.wjs_rate_policies.append(self.wjs_priority_policy)
+        self.wjs_current_policy = self.wjs_priority_policy
         utils.thread_start(self.wjs_datapoints_send, ())
 
     def _wjs_find_job(self, job_id):
@@ -684,8 +685,7 @@ class WatchedJobs(object):
                 CLUSTER.lc_stop_tbf_rule(tbf_name)
                 del self.wjs_jobs[job_id]
 
-            #self.wjs_independent_rate_policy.rp_tune_func(self)
-            self.wjs_priority_policy.rp_tune_func(self)
+            self.wjs_current_policy.rp_tune_func(self)
             self.wjs_condition.release()
             logging.debug("sent datapoints of jobs")
             sleep(METRIC_INTERVAL)
@@ -706,8 +706,15 @@ class WatchedJobs(object):
 
     def wjs_update_config(self, config):
         cluster = config["cluster"]
+        policy_name = cluster["policy"]
         jobs = cluster["jobs"]
         self.wjs_condition.acquire()
+        if self.wjs_current_policy.rp_name != policy_name:
+            for policy in self.wjs_rate_policies:
+                if policy.rp_name == policy_name:
+                    logging.error("changing policy to %s", policy_name)
+                    self.wjs_current_policy = policy
+                    break
         for config_job in jobs:
             job_id = config_job["job_id"]
             thoughput = config_job["throughput"]
