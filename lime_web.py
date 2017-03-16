@@ -13,6 +13,7 @@ import logging
 import logging.handlers
 import time
 import sys
+import random
 from gevent.wsgi import WSGIServer
 from gevent import monkey, sleep
 from geventwebsocket.handler import WebSocketHandler
@@ -122,7 +123,7 @@ class ActionHistory(object):
         # pylint: disable=too-many-arguments
         self.ah_qos_task = qos_task
         self.ah_job_id = job_id
-        self.ah_rates_original = qos_task.wjs_save_rates(job_id)
+        self.ah_rates_original = qos_task.wjs_save_rates(job_id, action_job_id)
         self.ah_stage = ActionHistory.STAGE_ORIGIN
 
         self.ah_action_good = None
@@ -141,9 +142,9 @@ class ActionHistory(object):
 
         self.ah_failure_time = 0
 
-    def ah_declined_after_action(self):
+    def ah_prior_declined_after_action(self):
         """
-        Check whether this action causes decline of jobs
+        Check whether this action causes decline of jobs with higher priority
         """
         for job_id in self.ah_rates_after_action:
             if self.ah_job_id == job_id:
@@ -154,6 +155,16 @@ class ActionHistory(object):
             rate_original = self.ah_rates_original[job_id]
             if rate_after_action + MIN_RATE_LIMIT / 2 < rate_original:
                 return True
+        return False
+
+    def ah_acted_declined_after_action(self):
+        """
+        Check whether this action causes decline of the tuned job
+        """
+        rate_original = self.ah_rates_original[self.ah_action_job_id]
+        rate_after_action = self.ah_rates_after_action[self.ah_action_job_id]
+        if rate_after_action + MIN_RATE_LIMIT / 2 < rate_original:
+            return True
         return False
 
     def ah_expected_action_result(self):
@@ -255,15 +266,19 @@ class ActionHistory(object):
         Return True if action processed, return false if the action ended
         """
         job_id = self.ah_job_id
+        action_id = self.ah_action_job_id
         logging.error("processing action with stage [%s]", self.ah_stage)
         if self.ah_stage == ActionHistory.STAGE_ACTED:
-            self.ah_rates_after_action = qos_task.wjs_save_rates(job_id)
-            if self.ah_declined_after_action():
+            self.ah_rates_after_action = qos_task.wjs_save_rates(job_id,
+                                                                 action_id)
+            self_benefit = self.ah_expected_action_result()
+            if (self.ah_prior_declined_after_action() or
+                    ((not self_benefit) and
+                     self.ah_acted_declined_after_action())):
                 self.ah_failure_time += 1
                 self.ah_regret()
                 self.ah_action_good = False
-                return True
-            elif not self.ah_expected_action_result():
+            elif not self_benefit:
                 self.ah_failure_time += 1
                 self.ah_action_good = False
             else:
@@ -271,7 +286,8 @@ class ActionHistory(object):
         else:
             assert (self.ah_stage ==
                     ActionHistory.STAGE_REGRETTED)
-            self.ah_rates_after_regret = qos_task.wjs_save_rates(job_id)
+            self.ah_rates_after_regret = qos_task.wjs_save_rates(job_id,
+                                                                 action_id)
             if self.ah_declined_after_regret():
                 logging.error("action caused declining and regetting "
                               "didn't recover it")
@@ -336,7 +352,7 @@ class PriorityRatePolicy(RatePolicy):
         """
         Try to increase the rate of itself
         """
-        hosts = job.wj_hosts_sort_by_throughput()
+        hosts = job.wj_hosts_random()
         selected = None
         for host in hosts:
             logging.error("checking host [%s] with total throughput [%d]",
@@ -674,7 +690,7 @@ class WatchedJobs(object):
             logging.debug("sent datapoints of jobs")
             sleep(METRIC_INTERVAL)
 
-    def wjs_save_rates(self, end_job_id):
+    def wjs_save_rates(self, end_job_id, action_job_id):
         """
         Save the rates before a job_id
         """
@@ -684,6 +700,8 @@ class WatchedJobs(object):
             rates[job_id] = job.wj_rate
             if job_id == end_job_id:
                 break
+        if action_job_id not in rates:
+            rates[action_job_id] = self.wjs_jobs[action_job_id].wj_rate
         return rates
 
 
@@ -825,6 +843,17 @@ class WatchedJob(object):
             host = self.wj_hosts[hostname]
             hosts.append(host)
         return sorted(hosts, key=lambda host: host.hfj_rate)
+
+    def wj_hosts_random(self):
+        """
+        Put the host randomly
+        """
+        hosts = []
+        for hostname in self.wj_hosts:
+            host = self.wj_hosts[hostname]
+            hosts.append(host)
+        random.shuffle(hosts)
+        return hosts
 
     def wj_decrease_highest_host(self, diff):
         """
