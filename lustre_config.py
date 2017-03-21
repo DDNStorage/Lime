@@ -12,7 +12,6 @@ import logging
 import ssh_host
 import utils
 
-
 class LustreService(object):
     # pylint: disable=too-few-public-methods
     """
@@ -103,6 +102,7 @@ class LustreHost(ssh_host.SSHHost):
                               service_name, self.sh_hostname)
                 if service_name in cluster_services:
                     service = cluster_services[service_name]
+                    service = cluster_services[service_name]
                     logging.error("two hosts [%s] and [%s] for service [%s]",
                                   service.ls_host.sh_hostname,
                                   self.sh_hostname, service_name)
@@ -122,6 +122,7 @@ class LustreHost(ssh_host.SSHHost):
                 logging.debug("service [%s] running on host [%s]",
                               service_name, self.sh_hostname)
                 if service_name in cluster_services:
+                    service = cluster_services[service_name]
                     logging.error("two hosts [%s] and [%s] for service [%s]",
                                   service.ls_host.sh_hostname,
                                   self.sh_hostname, service_name)
@@ -136,12 +137,19 @@ class LustreHost(ssh_host.SSHHost):
             match = self.lh_cluster.lc_mgs_regular.match(line)
             if match:
                 service_name = "MGS"
-                logging.debug("service [%s] running on host [%s]",
+                logging.debug("service [%s] might be running on host [%s]",
                               service_name, self.sh_hostname)
+
+                filesystems = self.lh_mgs_get_filesystems()
+                if self.lh_cluster.lc_fsname not in filesystems:
+                    continue                
+
                 if service_name in cluster_services:
+                    service = cluster_services[service_name]
                     logging.error("two hosts [%s] and [%s] for service [%s]",
                                   service.ls_host.sh_hostname,
                                   self.sh_hostname, service_name)
+                    return -1
                 service = LustreService(self.lh_cluster,
                                         LustreService.TYPE_MGS,
                                         service_name, self)
@@ -528,6 +536,23 @@ class LustreHost(ssh_host.SSHHost):
                           retval.cr_stderr)
             return -1
         return 0
+
+    def lh_mgs_get_filesystems(self):
+        """
+        This host is a MGS, get the filesystems on this MGS
+        """
+        command = "cat /proc/fs/lustre/mgs/MGS/filesystems"
+        retval = self.sh_run(command)
+        if retval.cr_exit_status != 0:
+            logging.error("failed to run command [%s] on host [%s], "
+                          "ret = [%d], stdout = [%s], stderr = [%s]",
+                          command, self.sh_hostname,
+                          retval.cr_exit_status,
+                          retval.cr_stdout,
+                          retval.cr_stderr)
+            return []
+        return retval.cr_stdout.split()
+
 
 class LustreCluster(object):
     """

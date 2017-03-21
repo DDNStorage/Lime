@@ -1145,7 +1145,7 @@ def start_web():
     elif not os.path.isdir(logdir):
         logging.error("[%s] is not a directory", logdir)
         sys.exit(-1)
-    utils.configure_logging("./")
+    utils.configure_logging(logdir)
     ret = load_config()
     if ret:
         logging.error("failed to load config")
