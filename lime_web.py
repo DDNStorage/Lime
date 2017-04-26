@@ -30,7 +30,7 @@ METRIC_INTERVAL = 1
 CLUSTER = None
 DEFAULT_RATE_LIMIT = 10000
 MIN_RATE_LIMIT = 10
-
+MIN_GRL_RATE = 1
 
 class RatePolicy(object):
     # pylint: disable=too-few-public-methods
@@ -41,6 +41,76 @@ class RatePolicy(object):
         self.rp_name = name
         self.rp_comment = comment
         self.rp_tune_func = tune_func
+
+class GlobalRatePolicy(RatePolicy):
+    """
+    The policy tries to maintain the aggregate bandwidth of
+    a job at global level
+    """
+    def __init__(self):
+        comment = ("The policy tries to maintain the aggregate bandwidth of"
+                   "a job at global level")
+        super(GlobalRatePolicy, self).__init__("GRL", comment,
+                                               self.grp_tune)
+
+    def grp_tune(self, qos_task):
+        """
+        tune the jobs. 
+        """
+        for job_id in qos_task.wjs_jobs:
+            job = qos_task.wjs_jobs[job_id]
+            self.grp_job_tune(job)
+
+    def grp_job_tune(self, job):
+        """
+        Tune the setting according to the rate 
+        """
+        rate = job.wj_rate
+        if job.wj_rate_limit is None:
+            logging.debug("GRL: job rate limit is None.");
+            for hostname in job.wj_hosts:
+                host = job.wj_hosts[hostname]
+                if host.hfj_rate_limit < DEFAULT_RATE_LIMIT:
+                    host.hfj_rate_limit = DEFAULT_RATE_LIMIT
+                    host.hfj_host.lh_change_tbf_rate(job.wj_tbf_name,
+                                                     DEFAULT_RATE_LIMIT)
+            return
+        if job.wj_current_rate_limit != job.wj_rate_limit:
+            # IMPROVE: not perfect algorithm, set on active hosts,
+            # rather than all hosts.
+            num = len(job.wj_hosts)
+            if num == 0:
+                return
+            activeNum = 0
+            for hostname in job.wj_hosts:
+                host = job.wj_hosts[hostname]
+                if host.hfj_rate > 0:
+                    activeNum += 1
+
+            rateLimit = MIN_GRL_RATE
+            inRateLimit = MIN_GRL_RATE
+            agvRateLimit = max(job.wj_rate_limit, MIN_GRL_RATE * num)
+            if activeNum > 0:
+                rateLimit = (agvRateLimit - (num - activeNum)
+                             * MIN_GRL_RATE) / activeNum
+            else:
+                rateLimit = agvRateLimit / num
+                inRateLimit = rateLimit
+
+            logging.debug("GRL: global rate [%d], active hosts [%d] rateLimit [%d], "
+                          "inactive hosts [%d] inRateLimit [%d]",
+                          job.wj_rate_limit, activeNum, rateLimit,
+                          num - activeNum, inRateLimit)
+            for hostname in job.wj_hosts:
+                host = job.wj_hosts[hostname]
+                if host.hfj_rate > 0:
+                    host.hfj_rate_limit = rateLimit
+                else:
+                    host.hfj_rate_limit = inRateLimit
+                host.hfj_host.lh_change_tbf_rate(job.wj_tbf_name,
+                                                 host.hfj_rate_limit)
+            job.wj_current_rate_limit = job.wj_rate_limit
+            return
 
 
 class IndependentRatePolicy(RatePolicy):
@@ -597,6 +667,8 @@ class WatchedJobs(object):
         self.wjs_condition = threading.Condition()
 
         self.wjs_rate_policies = []
+        self.wjs_global_rate_policy = GlobalRatePolicy()
+        self.wjs_rate_policies.append(self.wjs_global_rate_policy)
         self.wjs_independent_rate_policy = IndependentRatePolicy()
         self.wjs_rate_policies.append(self.wjs_independent_rate_policy)
         self.wjs_priority_policy = PriorityRatePolicy()

@@ -188,7 +188,7 @@ QoS.prototype.qos_policy_init = function()
     $(table_string).appendTo("#content");
 
     var value_select = '';
-    policies = ["priority", "independent"];
+    policies = ["priority", "independent", "GRL"];
     for (var i = 0; i < policies.length; i++) {
         value_select += "<option value='" + policies[i] + "'>" +
             policies[i] + "</option>";
