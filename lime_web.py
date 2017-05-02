@@ -31,6 +31,8 @@ CLUSTER = None
 DEFAULT_RATE_LIMIT = 10000
 MIN_RATE_LIMIT = 10
 MIN_GRL_RATE = 1
+MAX_REAL_IOPS = 500
+MAX_FAKE_IOPS = 1500
 
 class RatePolicy(object):
     # pylint: disable=too-few-public-methods
@@ -41,6 +43,26 @@ class RatePolicy(object):
         self.rp_name = name
         self.rp_comment = comment
         self.rp_tune_func = tune_func
+        self.rp_absum_diff = 0
+        self.rp_sum_et = 0
+        self.rp_eva = 0
+
+    def rp_evaluate(self, job, fake_io):
+        if job.wj_rate_limit is None:
+            logging.error("job rate limit is None.")
+            return
+
+        if fake_io:
+            Et = min(job.wj_rate_limit, MAX_FAKE_IOPS)
+        else:
+            Et = min(job.wj_rate_limit, MAX_REAL_IOPS)
+
+        Rt = job.wj_rate
+        self.rp_absum_diff += abs(Et - Rt)
+        self.rp_sum_et += job.wj_rate_limit
+        self.rp_eva = self.rp_absum_diff / self.rp_sum_et
+        logging.debug("Evaluation: [%f] algo [%s]",
+                      self.rp_eva, self.rp_name)
 
 class GlobalRatePolicy(RatePolicy):
     """
@@ -59,13 +81,13 @@ class GlobalRatePolicy(RatePolicy):
         """
         for job_id in qos_task.wjs_jobs:
             job = qos_task.wjs_jobs[job_id]
+            self.rp_evaluate(job, qos_task.wjs_current_fake_io)
             self.grp_job_tune(job)
 
     def grp_job_tune(self, job):
         """
         Tune the setting according to the rate 
         """
-        rate = job.wj_rate
         if job.wj_rate_limit is None:
             logging.debug("GRL: job rate limit is None.");
             for hostname in job.wj_hosts:
@@ -97,10 +119,10 @@ class GlobalRatePolicy(RatePolicy):
                 rateLimit = agvRateLimit / num
                 inRateLimit = rateLimit
 
-            logging.debug("GRL: global rate [%d], active hosts [%d] rateLimit [%d], "
-                          "inactive hosts [%d] inRateLimit [%d]",
-                          job.wj_rate_limit, activeNum, rateLimit,
-                          num - activeNum, inRateLimit)
+            logging.debug("GRL: global rate [%d]:[%d], active hosts [%d] rateLimit [%d], "
+                          "inactive hosts [%d] inRateLimit [%d], evaluation [%f]",
+                          job.wj_rate_limit, job.wj_rate, activeNum, rateLimit,
+                          num - activeNum, inRateLimit, self.rp_eva)
             for hostname in job.wj_hosts:
                 host = job.wj_hosts[hostname]
                 if host.hfj_rate > 0:
@@ -170,6 +192,7 @@ class IndependentRatePolicy(RatePolicy):
         """
         for job_id in qos_task.wjs_jobs:
             job = qos_task.wjs_jobs[job_id]
+            self.rp_evaluate(job, qos_task.wjs_current_fake_io)
             self.irp_job_tune(job)
 
 
@@ -656,6 +679,12 @@ class PriorityRatePolicy(RatePolicy):
                     return
             elif tmp_id == job_id:
                 found = True
+
+        # Evaluate the algorithm.
+        for job_id in qos_task.wjs_jobs:
+            job = qos_task.wjs_jobs[job_id]
+            self.rp_evaluate(job, qos_task.wjs_current_fake_io)
+
 
 
 class WatchedJobs(object):
