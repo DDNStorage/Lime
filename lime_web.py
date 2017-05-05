@@ -53,9 +53,9 @@ class RatePolicy(object):
             return
 
         if fake_io:
-            Et = min(job.wj_rate_limit, MAX_FAKE_IOPS)
+            Et = min(job.wj_rate_limit, CLUSTER.lc_max_real_iops)
         else:
-            Et = min(job.wj_rate_limit, MAX_REAL_IOPS)
+            Et = min(job.wj_rate_limit, CLUSTER.lc_max_fake_iops)
 
         Rt = job.wj_rate
         self.rp_absum_diff += abs(Et - Rt)
@@ -1197,6 +1197,10 @@ def load_config():
     global WATCHED_JOBS
     WATCHED_JOBS = WatchedJobs(fake_io)
     ret = CLUSTER.lc_detect_services()
+    if ret:
+        return -1
+
+    ret = CLUSTER.lc_benchmark()
     if ret:
         return -1
 

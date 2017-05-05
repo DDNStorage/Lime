@@ -521,6 +521,78 @@ class LustreHost(ssh_host.SSHHost):
             return -1
         return 0
 
+    def lh_benchmark(self, service, stripe_count = None):
+        """
+        Benchmark the system performance from clients.
+        """
+        fname = ("%s/%s_benchmark" % (service.ls_mount_point,
+                                  service.ls_host.sh_hostname))
+
+        command = ("rm -f %s" % (fname))
+        retval = self.sh_run(command)
+        if retval.cr_exit_status != 0:
+            logging.error("failed to run command [%s] on host [%s], "
+                          "ret = [%d], stdout = [%s], stderr = [%s]",
+                          command, self.sh_hostname,
+                          retval.cr_exit_status,
+                          retval.cr_stdout,
+                          retval.cr_stderr)
+            return -1
+
+        stripe = ""
+        if stripe_count is not None:
+            stripe = ("-c %d" % stripe_count)
+
+        command = ("lfs setstripe %s %s" % (stripe, fname))
+        retval = self.sh_run(command)
+        if retval.cr_exit_status != 0:
+            logging.error("failed to run command [%s] on host [%s], "
+                          "ret = [%d], stdout = [%s], stderr = [%s]",
+                          command, self.sh_hostname,
+                          retval.cr_exit_status,
+                          retval.cr_stdout,
+                          retval.cr_stderr)
+            return -1
+
+        command = ("chmod 777 %s" % (fname))
+        retval = self.sh_run(command)
+        if retval.cr_exit_status != 0:
+            logging.error("failed to run command [%s] on host [%s], "
+                          "ret = [%d], stdout = [%s], stderr = [%s]",
+                          command, self.sh_hostname,
+                          retval.cr_exit_status,
+                          retval.cr_stdout,
+                          retval.cr_stderr)
+            return -1
+
+        command = ("dd if=/dev/zero of=%s bs=1M count=5000 2>&1 | "
+                   "awk '/bytes/ {print $8\" \"$9 }'" % (fname))
+        retval = self.sh_run(command)
+        if retval.cr_exit_status != 0:
+            logging.error("failed to run command [%s] on host [%s], "
+                          "ret = [%d], stdout = [%s], stderr = [%s]",
+                          command, self.sh_hostname,
+                          retval.cr_exit_status,
+                          retval.cr_stdout,
+                          retval.cr_stderr)
+            return -1
+        retlist = retval.cr_stdout.split()
+        logging.error(retlist)
+        #max_iops = 0
+        if retlist[1] == "GB/s" :
+            max_iops = float(retlist[0]) * 1000
+        elif retlist[1] == "MB/s" :
+            max_iops = float(retlist[0])
+        else :
+            logging.error("Unknown dd ouput [%s]!", retval.cr_stdout)
+            max_iops = 0
+
+        ret = self.lh_remove_files(service)
+        if ret:
+            return ret
+
+        return max_iops
+
     def lh_remove_files(self, service):
         """
         Remove files under root directory
@@ -585,6 +657,8 @@ class LustreCluster(object):
         self.lc_map_service_host = {}
         self.lc_ost_number = 0
         self.lc_client_number = 0
+        self.lc_max_real_iops = 0
+        self.lc_max_fake_iops = 0
 
     def lc_detect_services(self):
         """
@@ -797,6 +871,48 @@ class LustreCluster(object):
                 return ret
             hosts.append(service.ls_host.sh_hostname)
         return 0
+
+    def lc_benchmark(self):
+        """
+        Benchmark the performance: fake I/O and real I/O
+        """
+        stripe_count = None
+        if self.lc_ost_number != 0:
+            stripe_count = self.lc_ost_number
+
+        for service_name, service in self.lc_services.iteritems():
+            logging.debug("itering on service [%s]", service_name)
+            if service.ls_service_type != LustreService.TYPE_CLIENT:
+                continue
+            ret = self.lc_enable_fifo_for_ost_io()
+            if ret:
+                return -1
+
+            ret = self.lc_clear_loc_for_oss()
+            if ret:
+                return -1
+
+            ret = service.ls_host.lh_benchmark(service,
+                                              stripe_count=stripe_count)
+            if ret < 0:
+                logging.error("failed to benchmark real I/O on host [%s]",
+                              service.ls_host.sh_hostname)
+                return ret
+            self.lc_max_real_iops = ret
+
+            self.lc_enable_fake_io_for_oss()
+            ret = service.ls_host.lh_benchmark(service,
+                                               stripe_count=stripe_count)
+            if ret < 0:
+                logging.error("failed to benchmark fake I/O on host [%s]",
+                              service.ls_host.sh_hostname)
+                return ret
+            self.lc_max_fake_iops = ret
+            break
+
+        logging.debug("Benchmark performce max_real_iops [%d] max_fake_iops [%d]",
+                      self.lc_max_real_iops, self.lc_max_fake_iops)
+
 
     def lc_start_io(self, jobs):
         """
