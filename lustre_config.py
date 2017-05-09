@@ -918,7 +918,8 @@ class LustreCluster(object):
         """
         Start IO
         """
-        if len(jobs) > self.lc_client_number:
+        count = len(jobs)
+        if count > self.lc_client_number:
             logging.error("not enough client [%d] for jobs [%d]",
                           self.lc_client_number, len(jobs))
             return -1
@@ -962,6 +963,8 @@ class LustreCluster(object):
                               service.ls_host.sh_hostname)
                 return ret
             index += 1
+            if index >= count:
+                break
         return 0
 
 

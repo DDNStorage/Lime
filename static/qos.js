@@ -61,7 +61,7 @@ QoS.prototype.qos_page_init = function()
     this.qos_lime.l_navigation.na_activate_key(NAVIGATION.KEY_QOS);
 };
 
-QoS.prototype.qos_job_init = function(job_id, index)
+QoS.prototype.qos_job_init = function(job_id, index, iops)
 {
     var that = this;
     if (job_id in this.qos_job_id_dict) {
@@ -78,7 +78,7 @@ QoS.prototype.qos_job_init = function(job_id, index)
 
     var tr = $("<tr><td><button id='" + name_job_name + "'>" + job_id + "</button></td>" +
         "<td><input id='" + name_rate + "' name='value' value='" +
-        QOS.DEFAULT_RATE_LIMIT + "'>" + "</td>" +
+        iops + "'>" + "</td>" +
         "<td><button id='" + name_perf + "'>0</button></td>" + "</tr>");
     tr.appendTo(QOS.ID_TBODY_JOB);
 
@@ -131,7 +131,8 @@ QoS.prototype.qos_jobs_init = function()
 {
     for(var i = 0; i < this.qos_lime.l_config.cluster.jobs.length; i++) {
         job_id = this.qos_lime.l_config.cluster.jobs[i].job_id;
-        this.qos_job_init(job_id, i);
+        iops = this.qos_lime.l_config.cluster.jobs[i].throughput;
+        this.qos_job_init(job_id, i, iops);
     }
 };
 
